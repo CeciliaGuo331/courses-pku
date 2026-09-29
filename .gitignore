@@ -1,3 +1,17 @@
 legacy/
+
 *.pdf
+*.zip
+*.docx
+*.pptx
+*.xlsx
+
 CLAUDE.md
+
+.DS_Store
+.obsidian
+强化学习/.vscode
+
+强化学习/lab
+计算机网络/lab
+金融工程概论/pre
