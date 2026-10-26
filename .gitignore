@@ -12,6 +12,17 @@ CLAUDE.md
 .obsidian
 强化学习/.vscode
 
+cache
+audio.mp3
+raw.md
+lecture.toml
+dehydrated.md
+
 强化学习/lab
 计算机网络/lab
+计算机网络/compile.txt
+计算机网络/docker-compose.yml
+计算机网络/docker-usage.txt
 金融工程概论/pre
+金融人工智能/ps1
+金融人工智能/ps1-submit
