@@ -1,0 +1,513 @@
+\needspace{10\baselineskip}
+\section{运行环境和运行机制}
+
+本章回答两个问题：(1) \textbf{运行环境}——OS 设计者要从硬件得到哪些支持（处理器的运行模式与特权指令、中断机制、存储、I/O、时钟）；(2) \textbf{运行机制}——应用程序怎样使用 OS 的服务（系统调用），以及贯穿全课的设计思想“机制与策略分离”。本章对应 CSAPP 第 8 章\textbf{异常控制流（ECF）}：理解 ECF 就能理解应用如何与 OS 交互、理解并发、理解软件异常。老师说：中断异常机制 + 调度时机 + 虚拟存储 = 全课核心 20\%，其中中断异常机制\imp{年年考}。
+
+\subsection{重点问题}
+
+\Q{Q2-1.1 应用程序是如何与操作系统交互的？}
+应用程序不能像调用普通函数那样直接调用内核函数：内核代码处于更高的特权级，内核内存受保护，用户态既不能跳进去执行，也不能读写。应用\textbf{主动}请求 OS 服务的唯一途径是\textbf{系统调用}：程序执行一条\textbf{陷入指令}（x86 的 \cd{int $0x80} 或 \cd{syscall}，RISC-V 的 \cd{ecall}），硬件随即切换到内核态，并跳到\textbf{内核事先设定好的入口}——用户只能“敲门”，不能选择进门后去哪里，这保证了安全。
+
+从更完整的角度看，应用与 OS 之间有四种交互方向：
+\begin{itemize}
+    \item 应用 $\to$ OS，主动：\textbf{系统调用}，如 \cd{write}、\cd{fork}。
+    \item 应用 $\to$ OS，被动：\textbf{异常}，如访问未映射的页触发缺页，除零触发异常后 OS 向进程发 SIGFPE。
+    \item 外部 $\to$ OS：\textbf{中断}，如时钟中断、磁盘完成中断，与当前应用无关，但可能导致它被切换。
+    \item OS $\to$ 应用：系统调用的\textbf{返回值}、\textbf{信号}（如 SIGSEGV、SIGINT）。
+\end{itemize}
+例：\texttt{printf("hello\textbackslash n")} 先把字符写入 libc 的缓冲区，遇到换行符（终端行缓冲）时 libc 调用 \cd{write(1, buf, 6)}，执行陷入指令进入内核的 \cd{sys_write}。用 \cd{strace -e trace=write ./hello} 可以看到这次系统调用。
+
+\Q{Q2-1.2 怎样理解“操作系统是由中断/异常/事件驱动的”？}
+内核不像普通程序那样从 \cd{main} 开始一直运行到结束。系统启动完成后，CPU 大部分时间在运行用户程序；内核只有在\textbf{中断、异常、系统调用}发生时才获得控制权，处理完事件后再返回某个用户程序——\textbf{不一定是被打断的那个}（中间可能发生了调度）。所以内核本质上是\textbf{一组事件处理程序}，没有事件时 OS 什么也不做（运行 idle）。xv6 中，所有从用户态进入内核的路径都汇集到 \cd{usertrap()}，内核态发生的 trap 汇集到 \cd{kerneltrap()}。老师的比喻：中断机制之于 OS，就像发动机之于汽车、引擎之于飞机。
+
+中断/异常机制的\textbf{三大作用}：(1) 及时处理设备发来的中断请求；(2) 让 OS 能捕获用户程序提出的服务请求（系统调用）；(3) 防止用户程序的破坏性活动（如写只读页、执行特权指令都会触发异常，被 OS 拦截）。
+
+\textbf{例：执行 \cd{cat file} 的过程中 OS 被事件驱动的时间线}：cat 调用 \cd{read}（系统调用，进内核）$\to$ 内核发起读盘，cat 阻塞，调度进程 P 运行 $\to$ 时钟中断（进内核），时间片到，切换到进程 Q $\to$ 磁盘完成，发中断（进内核），cat 变为就绪 $\to$ 又一次时钟中断，调度程序选中 cat $\to$ cat 从 \cd{read} 返回，继续执行。每一步状态变化都发生在某次进入内核的时刻。
+
+\Q{Q2-1.3 中断/异常的来源有什么不同？处理方式是一样的吗？}
+\begin{btab}{P{0.160}P{0.420}P{0.420}}
+\thead{& 中断（外中断） & 异常（内中断、例外）}
+\trow{来源 & CPU \textbf{外部}：I/O 设备、时钟、硬件故障、其他 CPU 核（IPI） & \textbf{正在执行的指令本身}：系统调用、缺页、除零、非法指令、断点、保护性异常}
+\trow{同步性 & \textbf{异步}：与当前执行的指令无关，什么时候来不可预测；可以暂时屏蔽、延后响应 & \textbf{同步}：同一程序、同一输入，每次都在同一条指令处发生；必须立即处理，无法屏蔽}
+\trow{返回地址 & 总是返回\textbf{下一条}指令 & 陷入（系统调用）返回下一条；\imp{故障（缺页）重新执行本条}；终止不返回}
+\trow{与当前进程的关系 & 通常无关（磁盘中断送来的可能是别的进程的数据） & 由当前进程引起，处理结果也作用于它（修复后继续、发信号或杀死）}
+\trow{x86 是否自动关中断 & 走中断门，进入时自动关中断 & Linux 的系统调用走陷阱门，不关中断}
+\trow{错误码 & 无 & 部分异常由硬件压入错误码（如 x86 缺页）}
+\trow{处理要求 & 要快（Linux 分上半部/下半部） & 可以较长，甚至可以阻塞（缺页时等待读盘）}
+\end{btab}
+\textbf{处理框架是相同的}：都在指令边界（或出错的那条指令处）停下，切换到内核态，保存 PC 和状态，按类型号查向量表跳到对应的处理程序，处理完用特殊指令返回。差别在于来源、同步性、返回地址和处理的紧迫程度。RISC-V 更统一：所有 trap 都跳到同一个入口 \cd{stvec}，再由软件读 \cd{scause} 区分是哪种。
+
+\Q{Q2-1.4 回顾 ICS 对异常的描述及分类}
+CSAPP 把所有事件统称为“异常”，分成四类：
+\begin{itemize}
+    \item \textbf{中断}（interrupt）：来自 I/O 设备等外部硬件，异步，返回下一条指令。
+    \item \textbf{陷阱}（trap）：有意安排的异常，如系统调用、断点，同步，返回下一条指令。
+    \item \textbf{故障}（fault）：可能可以恢复的错误，如缺页，同步；修复后\textbf{返回当前指令重新执行}，修复不了则终止进程。
+    \item \textbf{终止}（abort）：不可恢复的致命错误，如内存奇偶校验错，同步，不返回。
+\end{itemize}
+本课程把它们拆成“中断”和“异常”两类（陷阱、故障、终止都属于异常），\textbf{覆盖的事件完全相同，只是叫法不同}。课件的 2$\times$2 表：同步 + 意外 = fault；同步 + 有意 = syscall trap；异步 + 意外 = 硬件中断；异步 + 有意 = 软件中断（如核间中断 IPI、Linux softirq）。RISC-V 和 xv6 把这些统称为 \textbf{trap}。
+
+\textbf{为什么缺页要重新执行本条指令，系统调用却返回下一条？} 例如指令 \texttt{mov (\%rax), \%ebx} 访问的页不在内存，这条指令根本没有完成，\cd{ebx} 里还没有值，所以把页调入后必须重新执行它。系统调用则是 \cd{ecall} 这条指令“已经完成了它的使命”，如果返回到它自己，就会再发起一次系统调用，因此要返回下一条（xv6 中通过 \cd{p->trapframe->epc += 4} 实现）。
+
+\Q{Q2-1.5 中断/异常处理流程中，哪些工作由硬件负责，哪些由软件（OS）负责？}
+原则：\imp{硬件先、软件后，不交错}。老师说“以往考试很少有同学能答对这个顺序”。
+\begin{itemize}
+    \item \textbf{硬件（中断响应）}：
+    \begin{enumerate}
+        \item 在每条指令执行周期的\textbf{最后时刻}检查有没有中断信号（异常则在出错指令处立即触发）。
+        \item 识别中断源，得到中断号/异常号。
+        \item 把处理器切换到内核态。
+        \item 保存\textbf{少量}关键现场：PC 和 PSW（x86 还会从 TSS 取出内核栈指针，先切换到内核栈，再把用户态的 SS、ESP、EFLAGS、CS、EIP 压入内核栈）。
+        \item 按中断号查\textbf{中断向量表}，把处理程序的入口地址装入 PC。
+    \end{enumerate}
+    \textbf{软硬件的交接点 = 硬件把 PC 改成处理程序的入口地址}。从下一个指令周期开始，执行的就是 OS 的代码了。
+    \item \textbf{软件（中断处理程序）}：
+    \begin{enumerate}
+        \item 保存其余寄存器（x86 Linux 的 \cd{SAVE_ALL}；xv6 的 \cd{uservec} 把 31 个通用寄存器存入 trapframe）。
+        \item 分析中断/异常的具体原因（读中断号或 \cd{scause}）。
+        \item 执行对应的处理：设备驱动、系统调用服务例程、缺页处理等。
+        \item \textbf{进入调度}：处理过程中可能有进程状态发生变化，返回前要判断是否需要切换进程。
+        \item 恢复寄存器（可能是另一个进程的寄存器），执行中断返回指令（\cd{iret}/\cd{sret}/\cd{mret}），由硬件恢复 PC 和 PSW、切回原来的特权级。
+    \end{enumerate}
+    \item \textbf{分工的原则}：硬件只做\textbf{必须原子完成、软件做不了}的事——“改 PC”和“改特权级”必须在同一时刻完成，否则就会出现“已经是内核态但还在执行用户代码”或“已经跳进内核代码但还是用户态”的危险窗口。其余工作交给软件，以获得灵活性。RISC-V 在这一点上更极简：\imp{硬件不换栈、不换页表、不保存通用寄存器}，这些全部由软件完成。
+\end{itemize}
+\ez 硬件\textbf{只保存少数关键寄存器}，其余是软件保存的；中断处理完\textbf{不是}直接返回原程序，而是先进调度。
+
+\Q{Q2-1.6 从中断响应（硬件）到中断处理程序（软件）执行结束，计算机系统经过了哪些流程？}
+以\textbf{打印机中断}为例（课件小结）：
+\begin{description}
+    \item[硬件] (1) 打印机完成输出，向 CPU 发出中断信号。(2) CPU 执行完当前指令后检测到中断，判断出中断来源，并向设备发确认信号。(3) CPU 为软件处理中断做准备：切换到内核态，在系统栈中保存被中断程序的 PC、PSW。(4) 根据中断码查中断向量表，获得处理程序入口地址，并把 PC 设置为该地址；新的指令周期开始时，控制就转移到了中断处理程序。
+    \item[软件] (5) 处理程序先在系统栈中保存其余现场信息（汇编代码），并设置好内核栈。(6) C 语言的中断服务程序检查设备状态、在设备和内存之间传送数据，并\textbf{唤醒}等待打印完成的进程。(7) \imp{调度程序决定下一个运行哪个进程}（可能是刚被唤醒的进程，不一定是原来被打断的那个）。(8) 返回汇编代码，恢复（新的当前）进程的寄存器。(9) 执行中断返回指令，硬件从栈中恢复 PSW 和 PC，CPU 回到原来的状态，开始新的指令周期。
+\end{description}
+Tanenbaum 的“中断发生后 OS 低层工作步骤”给出的也是同样的 8 步：硬件压栈 PC 等 $\to$ 硬件从中断向量装入新 PC $\to$ 汇编保存寄存器 $\to$ 汇编设置新栈 $\to$ C 中断服务程序运行（如读入并缓冲输入）$\to$ 调度程序决定下一个进程 $\to$ C 返回汇编 $\to$ 汇编开始运行新的当前进程。这种“\textbf{汇编 $\to$ C $\to$ 汇编}”的三明治结构在 xv6 中就是 \cd{uservec} $\to$ \cd{usertrap()} $\to$ \cd{userret}。
+
+\Q{Q2-1.7 操作系统初始化与中断/异常有哪些关联？}
+中断向量表是\textbf{OS 在引导初始化时建立的}，它是软硬件协同的接口：硬件只负责“查表、跳转”，表里填什么由 OS 决定。初始化阶段要做：
+\begin{enumerate}
+    \item 建立中断向量表：x86 填写 IDT 各项并执行 \cd{lidt} 把表地址装入 IDTR；RISC-V 把入口地址写入 \cd{stvec}（xv6 在 \cd{trapinithart} 中完成）。
+    \item 为每一类中断/异常注册处理程序，并建立\textbf{系统调用表}。
+    \item 初始化中断控制器（x86 的 PIC/APIC，RISC-V 的 PLIC），设置各中断源的优先级和使能。
+    \item 设置时钟：没有时钟中断，就没有抢占式调度。
+    \item RISC-V 上还要在 M 态通过 \cd{medeleg}/\cd{mideleg} 把异常和中断委托给 S 态处理。
+    \item 以上都准备好之后才\textbf{开中断}（xv6 在 \cd{scheduler} 循环里调用 \cd{intr_on}）。如果在向量表建好之前就开中断，来一个中断就会跳到未知的地址。
+\end{enumerate}
+反过来，启动过程也利用了中断机制：xv6 从 M 态进入 S 态用的是 \cd{mret}，第一个用户进程进入用户态用的是 \cd{sret}，都是“伪造一次中断返回”。
+
+\Q{Q2-1.8 什么是软件异常？它是如何工作的？}
+软件异常指编程语言层面的 \cd{try/catch/throw}，它\textbf{不是}硬件异常，不进入内核，而是由用户态运行时实现的\textbf{非本地跳转}。C 语言的 \cd{setjmp/longjmp} 是最简单的形式：\cd{setjmp} 把 PC、SP 和 callee-saved 寄存器保存到一个缓冲区；\cd{longjmp} 再把它们恢复，于是程序“跳回”到 \cd{setjmp} 处——这与内核上下文切换保存/恢复寄存器的原理相同。C++ 的异常则通过 \cd{.eh_frame} 中的信息逐个栈帧回退（unwind），并调用局部对象的析构函数。
+
+两者的联系是分层：硬件异常 $\to$ 内核处理 $\to$ 内核向进程发送信号 $\to$ 用户态的信号处理函数可以用 \cd{siglongjmp} 跳回安全点（CSAPP 第 8 章的例子）。
+
+\Q{Q2-2.1 x86 有哪些控制和状态寄存器？作用是什么？}
+\begin{itemize}
+    \item \textbf{EFLAGS}：条件码（CF、ZF、SF、OF 等）以及控制位——\textbf{IF}（中断允许，清零后不响应可屏蔽中断）、TF（单步调试）、\textbf{IOPL}（I/O 特权级，决定哪个特权级可以执行 \cd{in/out}）。
+    \item \textbf{EIP}：指令指针（PC）。
+    \item \textbf{CR0}：PE（开启保护模式）、PG（开启分页）、WP（内核态也遵守页的写保护，COW 依赖它）。
+    \item \textbf{CR2}：发生缺页时，硬件把出错的线性地址存在这里，供缺页处理程序读取。
+    \item \textbf{CR3}：顶级页表（页目录）的物理基址。切换地址空间就是改 CR3，相当于 RISC-V 的 \cd{satp}。
+    \item CR4：PAE、PSE、SMEP/SMAP（禁止内核执行/访问用户页）等扩展特性开关。
+    \item \textbf{GDTR/LDTR}：全局/局部描述符表的地址；\textbf{IDTR}：中断描述符表的地址和长度。
+    \item \textbf{TR}：指向任务状态段 TSS，TSS 中存有各特权级的栈指针（SS0/ESP0 等），特权级切换时硬件从这里取内核栈。
+    \item CS 寄存器的低 2 位是\textbf{当前特权级 CPL}。
+    \item MSR（模型特定寄存器）：如 EFER（开启长模式）、SYSENTER\_CS/ESP/EIP、LSTAR（\cd{syscall} 入口）；DR0–DR7 调试寄存器。
+\end{itemize}
+修改这些寄存器的指令都是\textbf{特权指令}。
+
+\Q{Q2-2.2 x86 为什么提供 sysenter/sysexit？与 int 0x80/iret 有什么不同？x86-64 用什么？}
+\cd{int $0x80} 很慢：要查 IDT、再查 GDT（都是访存）、做特权级检查、读 TSS 切换栈、压入 5 个寄存器，开销达几百个时钟周期。而系统调用非常频繁，所以 Pentium II 引入了 \textbf{sysenter/sysexit}：
+\begin{itemize}
+    \item 目标代码段、入口 EIP、内核 ESP 都\textbf{预先存放在 MSR 中}，执行时不需要查内存中的表；
+    \item 假定平坦段模型，段描述符的值是硬编码的，不需要读 GDT；
+    \item \textbf{硬件不压栈}，返回地址等由软件自己保存；
+    \item 只能在 R3 与 R0 之间切换，不像中断门那样通用。
+\end{itemize}
+本质是\textbf{以通用性换速度}。x86-64 使用 \textbf{syscall/sysret}：入口地址在 MSR \cd{LSTAR} 中；硬件把返回地址存入 \textbf{RCX}，把 RFLAGS 存入 \textbf{R11}；RAX 放调用号，参数依次放 RDI、RSI、RDX、\textbf{R10}、R8、R9（第 4 个参数用 R10 而不是函数调用约定中的 RCX，因为 RCX 已被硬件占用），返回值放 RAX。更进一步，\textbf{vDSO} 把 \cd{gettimeofday} 这类只读内核数据的调用映射到用户空间，完全不用进内核。
+
+\Q{Q2-2.3 x86 有几种处理器模式？之间是什么关系？}
+\begin{itemize}
+    \item \textbf{实模式}：上电后的模式，16 位，物理地址 = 段寄存器 $\times$ 16 + 偏移，只能访问 1MB，没有任何保护。
+    \item \textbf{保护模式}：置 CR0.PE 进入，32 位，有分段和分页、R0–R3 四个特权级。
+    \item \textbf{IA-32e 长模式}：在保护模式下开启 PAE、置 EFER.LME，再开启分页（PG）进入，包括 64 位模式和兼容模式（运行 32 位程序）。
+    \item \textbf{虚拟 8086 模式}：保护模式下置 EFLAGS.VM，用于运行实模式程序。
+    \item \textbf{系统管理模式 SMM}：任何模式下收到 SMI 信号都会进入，执行 RSM 指令返回，用于电源管理等固件功能。
+\end{itemize}
+要区分\textbf{处理器模式}（决定寻址方式、有没有保护）和\textbf{特权级}（只在保护模式/长模式下才有意义）。
+
+\Q{Q2-2.4 RISC-V 有哪些控制和状态寄存器（CSR）？作用是什么？}
+以 S 态为例（M 态有一套对应的 \cd{m} 开头的寄存器）：\par
+\begin{btab}{P{0.196}P{0.804}}
+\trow{\cd{sstatus} & \textbf{SIE}：S 态中断总开关；\textbf{SPIE}：进入 trap 之前的 SIE 值（返回时恢复）；\textbf{SPP}：trap 来自哪个模式（0 = U，1 = S），\cd{sret} 按它决定回到哪个模式；SUM：允许 S 态访问用户页。M 态的 \cd{mstatus} 对应地有 2 位的 MPP}
+\trow{\cd{stvec} & trap 处理程序的入口地址（相当于只有一项的“中断向量表”）}
+\trow{\cd{sepc} & 发生 trap 时的 PC；\cd{sret} 跳回这里}
+\trow{\cd{scause} & trap 原因。最高位为 1 表示中断、为 0 表示异常；异常码 8 = U 态 \cd{ecall}，12/13/15 = 取指/读/写缺页，2 = 非法指令；中断码 1 = 软件中断，5 = 定时器中断，9 = 外部中断（来自 PLIC）}
+\trow{\cd{stval} & 附加信息：缺页时为出错的虚拟地址，非法指令时为指令编码}
+\trow{\cd{sscratch} & 暂存寄存器。刚进入 trap 时所有通用寄存器都装着用户的值，一个空闲的都没有，需要先和它交换出一个来用}
+\trow{\cd{sie}/\cd{sip} & 各类中断的使能位 / 待处理位}
+\trow{\cd{satp} & 页表根的物理页号 + 分页模式（如 Sv39）+ ASID，相当于 x86 的 CR3}
+\end{btab}
+M 态独有：\cd{mhartid}（核号）、\cd{medeleg/mideleg}（把哪些异常/中断委托给 S 态）、PMP（物理内存保护）、\cd{mtime/mtimecmp}（定时器，内存映射）。规则：低特权级不能访问高特权级的 CSR，否则触发非法指令异常。
+
+\Q{Q2-2.5 RISC-V 的陷入指令是什么？}
+陷入指令是 \textbf{\cd{ecall}}：在 U 态执行时进入 S 态，\cd{scause} = 8（即系统调用）；在 S 态执行时进入 M 态，原因码为 9（即 SBI 调用，内核请求固件服务）。另有 \cd{ebreak} 用于断点。返回指令为 \cd{sret}（按 SPP 返回）和 \cd{mret}（按 MPP 返回）。
+
+执行 \cd{ecall}（或发生任何 trap）时硬件做的事：(1) 若是设备中断且 SIE 为 0，则暂不响应；(2) 把 SIE 复制到 SPIE，然后清零 SIE（\textbf{关中断}）；(3) 把 PC 复制到 \cd{sepc}；(4) 把当前模式记录到 SPP；(5) 把原因写入 \cd{scause}；(6) 切换到 S 态；(7) 把 \cd{stvec} 复制到 PC，开始执行处理程序。\imp{硬件不切换页表、不切换栈、不保存除 PC 以外的任何寄存器}——这些都由 xv6 的 \cd{uservec} 用软件完成。这与 x86 硬件自动经 TSS 换栈、压栈形成鲜明对比。
+
+\Q{Q2-2.6 RISC-V 有几种处理器模式？之间是什么关系？}
+三种：\textbf{U}（用户，编码 00）、\textbf{S}（监管者，01，运行 OS 内核）、\textbf{M}（机器，11，运行固件）；10 保留给虚拟化扩展（H）。\textbf{只有 M 模式是必须实现的}，合法组合有 M（简单嵌入式）、M + U（带保护的嵌入式）、M + S + U（运行 Unix 类 OS）。所有 trap 默认进入 M 态，可以通过委托寄存器交给 S 态处理。模式之间的转换规则：\textbf{向更高特权级只能通过 trap}（ecall、异常、中断），\textbf{向更低特权级只能通过 \cd{mret}/\cd{sret}}。
+
+\Q{Q2-3.1 基于 x86 的 Linux：系统调用入口程序 \cd{system_call()} 与中断描述符表、系统调用表是什么关系？}
+\textbf{两张表、两次查表、两级分派}：
+\begin{enumerate}
+    \item 用户执行 \cd{int $0x80}，\textbf{硬件}以 0x80 为下标查 \textbf{IDT}（中断描述符表，即中断向量表）。IDT 的第 128 项是一个陷阱门，指向 \cd{system_call()}。这一项是内核初始化时用 \cd{set_system_gate(0x80, &system_call)} 填写的。
+    \item \cd{system_call()} 是\textbf{所有系统调用共用的总入口}。它保存现场后，\textbf{软件}以 \cd{eax} 中的系统调用号为下标查\textbf{系统调用表} \cd{sys_call_table}，调用对应的服务例程，如 \cd{sys_write}。
+\end{enumerate}
+所以 \cd{system_call()} 一方面是 IDT 第 128 项登记的处理程序，另一方面又是系统调用表的使用者。之所以分两级：IDT 只有 256 项，还要留给中断和异常，而系统调用有几百个，只能占一项，再由软件细分；这也是“硬件提供机制、软件决定细节”的体现。\bk \imp{中断向量表与系统调用表是两张不同的表}，往年 30\%–40\% 的同学答错。
+
+\Q{Q2-3.2 系统调用处理结束后，处理器转去执行哪个模块？}
+转去执行 \cd{ret_from_sys_call}（所有系统调用、中断、异常共用的返回路径）：
+\begin{enumerate}
+    \item \cd{cli} 关中断，防止检查过程中状态又发生变化。
+    \item 检查当前进程的 \cd{need_resched} 标志：若被置位（如时间片已用完，或刚唤醒了更高优先级的进程），则调用 \cd{schedule()} 切换到别的进程，当前进程暂时不返回用户态。
+    \item 检查 \cd{sigpending}：若有待处理的信号，则先处理信号（调用信号处理函数等）。信号在\textbf{内核返回用户态之前的最后时刻}统一处理，并且一次处理完所有待处理的信号；信号用\textbf{位向量}记录，同类信号不排队，第一个还没处理时第二个直接丢失。
+    \item \cd{RESTORE_ALL} 弹出 \cd{SAVE_ALL} 保存的寄存器，\cd{iret} 由硬件恢复 EIP、CS、EFLAGS、ESP、SS，回到 \cd{int $0x80} 的\textbf{下一条}指令。
+\end{enumerate}
+
+\Q{Q2-3.3 系统调用与函数/过程调用的区别？与 C 函数调用的区别？与 API 的关系？}
+\begin{btab}{P{0.152}P{0.424}P{0.424}}
+\thead{& 普通函数调用 & 系统调用}
+\trow{使用的指令 & \cd{call}/\cd{jal}，直接跳到目标地址 & \cd{int}/\cd{syscall}/\cd{ecall}，跳到内核预设的入口}
+\trow{特权级 & 不变 & 用户态 $\to$ 内核态，返回时再切回}
+\trow{使用的栈 & 同一个用户栈 & 切换到\textbf{内核栈}}
+\trow{被调用者地址 & 链接时就确定了 & 由系统调用号\textbf{间接查表}确定}
+\trow{参数 & 寄存器或用户栈 & 寄存器；指针参数必须由内核检查合法性并拷贝}
+\trow{返回 & \cd{ret}，一定回到调用点 & \cd{iret}/\cd{sysret}/\cd{sret}；\textbf{返回前可能发生调度、处理信号}}
+\trow{开销 & 几个时钟周期 & 几十到几百个时钟周期}
+\end{btab}
+\textbf{与库函数的关系}：库函数是普通的用户态函数。有的完全不进内核（\cd{strlen}）；有的是对一个系统调用的薄封装（\cd{write}、\cd{fopen} 封装 \cd{open}）；有的只在必要时才进内核（\cd{printf} 在缓冲区满或遇到换行时才调用 \cd{write}；\cd{malloc} 在堆空间不够时才调用 \cd{brk} 或 \cd{mmap}）。
+
+\textbf{与 API 的关系}：API（如 POSIX）是一套接口规范，一个 API 函数可以对应 0 个、1 个或多个系统调用；例如 Linux 上的 \cd{fork()} 库函数内部实际调用的是 \cd{clone} 系统调用。\imp{命令行命令（如 \cd{ls}）不是系统调用}，它是一个用户程序，执行时会使用许多系统调用（可用 \cd{strace ls} 观察）。层次关系：应用程序 $\to$ API / C 库 $\to$ 陷入指令 $\to$ 系统调用接口 $\to$ 查系统调用表 $\to$ 内核函数。
+
+\subsection{处理器、特权级与特权指令}
+
+处理器由运算器、控制器、一系列寄存器和高速缓存构成。寄存器分两类：\textbf{用户可见寄存器}（数据/通用寄存器、地址寄存器、条件码寄存器，机器语言可以直接引用）和\textbf{控制和状态寄存器}（PC、指令寄存器 IR、\textbf{程序状态字 PSW}，用于控制处理器的操作，只有在一定特权级下才能访问和修改）。
+
+\textbf{为什么需要特权级}：OS 的并发和共享特征要求必须有保护——多个程序共享资源，不能让某个程序破坏别人或破坏 OS。靠软件“自律”是不可靠的，必须由\textbf{硬件}提供机制：处理器有不同的运行模式，不同模式下可执行的指令集合不同。PSW 中专门有一位（或几位）记录当前模式，例如 x86 的 CS 低 2 位、RISC-V 的当前模式。OS 至少需要两种模式：\textbf{内核态}（管态、supervisor mode）运行 OS 程序，\textbf{用户态}（目态）运行用户程序。x86 有 R0–R3 四个特权环，从 R0 到 R3 特权由高到低，但大多数 OS 只使用 R0（内核态）和 R3（用户态）；RISC-V 有 M、S、U 三种模式。
+
+\textbf{特权指令}：只能由 OS 使用、用户程序不能使用的指令；\textbf{非特权指令}：用户程序可以使用的指令。课堂讨论题的答案：
+\begin{itemize}
+    \item \imp{特权指令}：启动 I/O、内存清零（对整个主存而言）、修改程序状态字、设置时钟、允许/禁止中断、停机。
+    \item \imp{非特权指令}：控制转移、算术运算、取数指令、\textbf{访管指令}。
+\end{itemize}
+\ez 访管指令（陷入指令，如 \cd{ecall}、\cd{int 0x80}）名字里有“管”，但它\textbf{必须是非特权指令}：它的作用就是让用户程序进入内核，如果用户态不能执行它，用户程序就永远无法请求 OS 的服务。判断原则：如果用户程序随意使用这条指令，会不会破坏 OS 对资源的控制或进程之间的隔离？会，就应该是特权指令。用户态执行特权指令会触发非法指令异常，OS 通常会杀死该进程。
+
+\textbf{CPU 状态之间的转换}：
+\begin{itemize}
+    \item 用户态 $\to$ 内核态：\imp{唯一途径是中断/异常/陷入机制}。硬件在切换模式的同时跳到 OS 指定的入口，用户无法选择入口，所以是安全的。
+    \item 内核态 $\to$ 用户态：通过\textbf{设置程序状态字 PSW} 实现，即执行中断返回类指令（x86 \cd{iret}、RISC-V \cd{sret}/\cd{mret}），它们本身是特权指令。
+\end{itemize}
+各体系结构的陷入指令：x86 的 \cd{int}、\cd{syscall}、\cd{sysenter}；RISC-V 的 \cd{ecall}；ARM 的 \cd{svc}；早期 SPARC/MIPS 的 \cd{trap}。
+
+\subsection{中断/异常机制}
+
+\textbf{概念}：中断/异常是 CPU 对系统中发生的某个事件作出的一种反应：CPU \textbf{暂停}正在执行的程序，\textbf{保留现场}后\textbf{自动}转去执行相应事件的处理程序，处理完成后\textbf{返回断点}，继续执行被打断的程序。特点：改变了处理器的控制流；随机发生；自动处理（由硬件完成转移）；可恢复。
+
+\textbf{为什么引入}：
+\begin{itemize}
+    \item \textbf{中断}是为了支持\textbf{CPU 与设备的并行操作}：CPU 启动设备进行 I/O 后，设备独立工作，CPU 去做别的事；设备完成后发中断报告结果，由 CPU 决定后续处理。没有中断，CPU 只能不断轮询设备状态，浪费时间。
+    \item \textbf{异常}是为了表示 CPU 执行指令时\textbf{本身出现的问题}：算术溢出、除零、取数时奇偶校验错、访存越界，或执行了陷入指令。这时硬件改变执行流程，转到相应的错误处理程序、异常处理程序或系统调用。
+\end{itemize}
+\textbf{事件分类}：中断（外中断）包括 I/O 中断、时钟中断、硬件故障；异常（内中断、例外）包括系统调用、页错误、保护性异常、断点指令、其他程序性异常（如算术溢出）。
+
+\textbf{中断/异常机制的工作原理}：中断/异常机制是现代计算机系统的核心机制之一，它\textbf{通过硬件和软件相互配合}，使计算机系统得以充分发挥能力（课件原话）。两者的分工是：
+\begin{itemize}
+    \item \textbf{硬件该做什么？——中断/异常响应}：\textbf{捕获}中断源发出的中断/异常\textbf{请求}，以一定方式\textbf{响应}，将处理器\textbf{控制权交给}特定的处理程序。
+    \item \textbf{软件要做什么？——中断/异常处理程序}：\textbf{识别}中断/异常的类型，并完成\textbf{相应的处理}。
+\end{itemize}
+一句话：硬件负责“\textbf{发现事件并把 CPU 交给 OS}”，软件负责“\textbf{弄清是什么事件并处理它}”；连接两者的是 OS 事先填好的\textbf{中断向量表}。
+
+\textbf{(1) 硬件：中断响应}。中断响应是\textbf{发现中断、接收中断}的过程，\textbf{由中断硬件部件完成}，不需要执行任何软件指令。CPU 的指令周期在“取指周期、执行周期”之后多了一个\textbf{中断周期}：\par
+\begin{center}
+\begin{tikzpicture}[>=Stealth, every node/.style={font=\scriptsize},
+  bx/.style={draw, rounded corners=2pt, inner sep=3pt, minimum height=0.6cm, align=center, font=\footnotesize}]
+\node[bx] (st)  at (0,0)    {开始};
+\node[bx] (f)   at (2.1,0)  {取下一条指令};
+\node[bx] (e)   at (4.8,0)  {执行指令};
+\node[bx] (c)   at (7.7,0)  {检查中断\\处理中断};
+\node[bx] (hlt) at (4.8,-1.3) {停止};
+\node at (2.1,1.55) {取指周期};
+\node at (4.8,1.55) {执行周期};
+\node at (7.7,1.55) {中断周期};
+\draw[->] (st) -- (f);
+\draw[->] (f) -- (e);
+\draw[->] (e) -- node[below, pos=0.45]{允许中断} (c);
+\draw[->] (e) -- (hlt);
+\draw[->] (e.north) -- ++(0,0.5) node[right, pos=0.6]{禁止中断} -| ([xshift=-4pt]f.north);
+\draw[->] (c.north) -- ++(0,1.0) node[right, pos=0.5]{开始下一个指令周期} -| ([xshift=4pt]f.north);
+\end{tikzpicture}
+\end{center}
+图中“检查中断”一格：若无中断信号，继续执行下一条指令；若有中断，PC 已被换成处理程序入口，“下一条指令”就是处理程序的第一条指令。
+\begin{enumerate}
+    \item \textbf{何时检查}：在\textbf{每条指令执行周期的最后时刻}扫描中断寄存器，查看是否有中断信号——所以中断总是在指令边界被响应，被打断的那条指令已经执行完，返回地址是\textbf{下一条}。（异常不同：它在执行某条指令的过程中由该指令本身触发，故障类要重新执行这条指令。）若当前禁止中断（如 x86 的 IF = 0、RISC-V 的 SIE = 0），可屏蔽中断暂不响应，信号保持挂起。
+    \item \textbf{识别中断源}：若有中断，中断硬件把中断触发器的内容\textbf{按规定编码送入 PSW 的相应位}，称为\textbf{中断码}（x86 由中断控制器 PIC/APIC 把设备信号转换成向量号；RISC-V 写入 \cd{scause}）。多个中断同时到来时，按硬件规定的优先级选一个。
+    \item \textbf{切换处理器状态}：把处理器切换到\textbf{内核态}（x86 从 TSS 取内核栈并切换，RISC-V 不换栈）。
+    \item \textbf{保存少量现场}：在系统栈中（或专用寄存器中）保存被中断程序最重要的上下文——\textbf{PC 和 PSW}。之所以必须由硬件保存这两个，是因为一旦 PC 被改写、模式被切换，原来的值就丢了，软件再也拿不到。
+    \item \textbf{交换中断向量}：按中断码查\textbf{中断向量表}，把表项中的处理程序入口地址装入 PC（以及新的 PSW），新的指令周期开始时，CPU 就转去执行中断处理程序。\imp{到这里硬件的工作结束，控制权交给软件}。
+\end{enumerate}
+
+\textbf{中断向量表——软硬件协同的接口}。\textbf{中断向量}是一个内存单元，存放\textbf{中断处理程序的入口地址}和程序运行所需的\textbf{处理机状态字}；所有中断向量构成\textbf{中断向量表}。\textbf{硬件执行流程按中断号/异常类型的不同，通过中断向量表把控制权转移给中断处理程序}：\par
+\begin{center}
+\begin{tikzpicture}[>=Stealth, every node/.style={font=\scriptsize},
+  cell/.style={draw, minimum width=2.4cm, minimum height=0.42cm, inner sep=1pt},
+  hd/.style={draw, rounded corners=2pt, align=center, inner sep=2pt, font=\scriptsize}]
+\node[cell] (v0) at (0,0)     {0：入口 $D_0$ + PSW};
+\node[cell] (v1) at (0,-0.42) {1：入口 $D_1$ + PSW};
+\node[cell] (v2) at (0,-0.84) {2：入口 $D_2$ + PSW};
+\node[cell] (vd) at (0,-1.26) {$\cdots$};
+\node[cell] (vs) at (0,-1.68) {128：系统调用入口};
+\node[cell] (ve) at (0,-2.10) {$\cdots$};
+\node[cell] (vn) at (0,-2.52) {255：入口 $D_{255}$ + PSW};
+\node[above=1pt of v0] {中断向量表（OS 初始化时建立）};
+\node[left=2pt of v1, align=right] (code) {中断码 / \\ 向量号};
+\draw[->] (code.east) ++(-0.05,0) -- (v1.west);
+\node[hd] (h0) at (4.6,0.1)   {除零异常\\处理程序};
+\node[hd] (h1) at (4.6,-0.95) {时钟中断\\处理程序};
+\node[hd] (h2) at (4.6,-2.0)  {系统调用\\总入口};
+\node[hd] (h3) at (7.0,-0.95) {磁盘中断\\处理程序};
+\draw[->] (v0.east) -- (h0.west);
+\draw[->] (v1.east) -- (h1.west);
+\draw[->] (vs.east) -- (h2.west);
+\draw[->] (v2.east) -- ++(0.4,0) |- (5.9,-1.47) -| (h3.south);
+\node[below=2pt of h2, align=center] {（再用系统调用号查\\系统调用表——第二张表）};
+\end{tikzpicture}
+\end{center}
+\textbf{为什么说它是“协同”的关键}：表的\textbf{格式和查表方式由硬件规定}（x86 的 IDT 门描述符、RISC-V 的 \cd{stvec}），表的\textbf{内容由 OS 在初始化时填写}（每个向量指向哪个处理程序、用什么门、DPL 是多少）。硬件不需要知道 OS 怎么处理磁盘中断，OS 也不需要关心 CPU 如何检测中断信号——这正是\textbf{机制与策略分离}。这也回答了课件的问题“\textbf{OS 初始化与中断/异常有哪些关联}”：必须先建好向量表、注册好处理程序，才能开中断（见 Q2-1.7）。
+
+\textbf{中断响应流程}（课件图，五步）：\par
+\begin{center}
+\begin{tikzpicture}[>=Stealth, every node/.style={font=\scriptsize},
+  bx/.style={draw, align=center, inner sep=2pt, font=\scriptsize}]
+\node[bx, minimum width=1.3cm] (dev) at (0,0) {I/O 设备};
+\node[bx, minimum width=2.8cm, minimum height=1.3cm] (cpu) at (3.4,0) {};
+\node at (3.4,0.38) {CPU（中断装置）};
+\node[bx] (psw) at (2.9,-0.25) {PSW};
+\node[bx] (pc)  at (3.9,-0.25) {PC};
+\node[bx, minimum width=1.9cm, minimum height=1.0cm] (stk) at (0.3,-2.6) {系统栈\\[2pt]PSW$_a$ \quad PC$_a$};
+\node[bx, minimum width=2.4cm, minimum height=1.0cm] (vt)  at (3.4,-2.6) {中断向量表\\[2pt]第 $i$ 项：PSW$_i$ \; $D_i$};
+\node[bx, minimum width=2.0cm, minimum height=0.9cm] (isr) at (7.6,0)   {中断处理程序\\（入口 $D_i$，软件）};
+\node[bx, minimum width=2.0cm, minimum height=0.9cm] (prg) at (7.6,-2.6) {被中断程序\\断点 PC$_a$};
+\draw[->] (dev) -- node[above]{(1) 中断信号} (cpu.west);
+\draw[->, dashed] (psw.south) -- node[above left=-2pt, pos=0.35]{(2) 保存现场} (stk.north);
+\draw[->, dashed] ([xshift=-0.35cm]cpu.south) -- node[left, pos=0.78]{(3) 按中断码查表} ([xshift=-0.35cm]vt.north);
+\draw[->, dashed] ([xshift=0.35cm]vt.north) -- node[right, align=left]{(4) $D_i$、PSW$_i$\\装入 PC、PSW} ([xshift=0.35cm]cpu.south);
+\draw[->] (cpu.east) -- node[above]{(5) 执行} (isr.west);
+\draw[->] (isr.south) -- node[right, align=left]{处理完，中断返回\\恢复 PSW$_a$、PC$_a$} (prg.north);
+\end{tikzpicture}
+\end{center}
+(1)～(4) 都是硬件动作，第 (5) 步起才是软件。第 (2) 步保存的 PSW、PC 正是返回时要恢复的“断点”；第 (4) 步把向量表中的新 PSW（如内核态、关中断）和入口 $D_i$ 装入，相当于一次“交换 PSW”。
+
+\textbf{(2) 软件：中断/异常处理程序}。设计 OS 时，要为每一类中断/异常事件\textbf{事先编好}相应的处理程序，并设置好中断向量表；系统运行时一旦响应中断，中断硬件就把 CPU 控制权交给处理程序，处理程序依次：
+\begin{enumerate}
+    \item \textbf{保存相关寄存器信息}：硬件只保存了 PC 和 PSW，处理程序马上要用到通用寄存器，必须先把被中断程序的其余寄存器保存起来（汇编代码，如 Linux \cd{SAVE_ALL}、xv6 \cd{uservec} 存入 trapframe），并设置好内核栈。
+    \item \textbf{分析中断/异常的具体原因}：读中断码、\cd{scause}、设备状态寄存器，判断是哪个设备、什么异常、哪个系统调用。
+    \item \textbf{执行对应的处理功能}（通常是 C 代码）：如 I/O 中断时检查设备状态、在设备和内存之间传送数据、唤醒等待的进程；缺页时分配页、读盘；系统调用时查系统调用表分派。
+    \item \textbf{恢复现场，返回被事件打断的程序}：恢复寄存器后执行\textbf{中断返回指令}（\cd{iret}/\cd{sret}/\cd{mret}）——这一步又回到了硬件：CPU 检测到中断返回指令，从系统栈（或 \cd{sepc}/\cd{sstatus}）中恢复被中断程序的 PSW 和 PC，CPU 状态恢复成原来的状态，开始新的指令周期。
+\end{enumerate}
+\ez 实际 OS 在第 3、4 步之间还有一步：\textbf{检查是否需要调度}。处理过程中可能有进程被唤醒、时间片用完，若需要切换，第 4 步恢复的就是\textbf{另一个进程}的寄存器，“返回”到的是另一个进程的断点。
+
+\textbf{(3) 软硬件协同：完整时间线}。以用户程序运行中发生一次中断为例，三条泳道分别是用户程序、硬件、OS 软件：\par
+\begin{center}
+\begin{tikzpicture}[>=Stealth, every node/.style={font=\scriptsize},
+  b/.style={draw, rounded corners=2pt, align=center, inner sep=2pt, text width=2.9cm, font=\scriptsize},
+  lane/.style={font=\footnotesize\bfseries}]
+\node[lane] at (0,0.55)   {用户程序（用户态）};
+\node[lane] at (3.6,0.55) {硬件（中断响应）};
+\node[lane] at (7.2,0.55) {OS 软件（内核态）};
+\draw[gray, dashed] (1.8,0.8) -- (1.8,-8.6);
+\draw[gray, dashed] (5.4,0.8) -- (5.4,-8.6);
+\node[b] (u1) at (0,0)     {执行第 $k$ 条指令};
+\node[b] (h1) at (3.6,-0.8) {指令周期末检测到中断信号；识别中断源，得到中断码};
+\node[b] (h2) at (3.6,-1.85) {切换到内核态（x86 经 TSS 换内核栈）；保存 PC、PSW};
+\node[b] (h3) at (3.6,-2.9) {按中断码查中断向量表，入口地址装入 PC};
+\node[b] (s1) at (7.2,-3.95) {保存其余寄存器（\texttt{SAVE\_ALL}/trapframe），设置内核栈};
+\node[b] (s2) at (7.2,-4.9) {识别原因，执行处理（驱动、缺页、系统调用……）};
+\node[b] (s3) at (7.2,-5.85) {检查是否需要调度，可能切换到别的进程};
+\node[b] (s4) at (7.2,-6.8) {恢复（某个进程的）寄存器，执行 \texttt{iret}/\texttt{sret}};
+\node[b] (h4) at (3.6,-7.6) {恢复 PC、PSW，切回用户态};
+\node[b] (u2) at (0,-8.3)  {从第 $k+1$ 条指令继续（缺页则重执行第 $k$ 条）};
+\draw[->] (u1.east) -| (h1.north);
+\draw[->] (h1) -- (h2);
+\draw[->] (h2) -- (h3);
+\draw[->, very thick] (h3.east) -| node[pos=0.25, above, font=\scriptsize\bfseries, text=red]{交接点：改 PC} (s1.north);
+\draw[->] (s1) -- (s2);
+\draw[->] (s2) -- (s3);
+\draw[->] (s3) -- (s4);
+\draw[->] (s4.south) |- (h4.east);
+\draw[->] (h4.west) -| (u2.north);
+\end{tikzpicture}
+\end{center}
+协同的要点：
+\begin{itemize}
+    \item \textbf{顺序}：\imp{硬件先、软件后，不交错}；软件处理完先进调度，再由返回指令把控制交还硬件。进出各有一个交接点：进入时是“硬件改 PC 跳到处理程序入口”，退出时是“软件执行中断返回指令”。
+    \item \textbf{分工原则}：硬件只做必须\textbf{原子完成}、软件做不了的事（改 PC 与切换特权级必须同时发生；保存会被覆盖的 PC/PSW）；其余交给软件，以获得灵活性。不同体系结构的“硬件那一份”大小不同：x86 硬件还会换栈、压 5 个寄存器；RISC-V 硬件只写 \cd{sepc}/\cd{scause}/\cd{sstatus}、跳 \cd{stvec}，换栈和保存通用寄存器全由软件做。
+    \item \textbf{接口}：中断向量表（格式由硬件定、内容由 OS 填）；中断码 / \cd{scause}（硬件写、软件读）；中断返回指令（软件发起、硬件执行恢复）。
+    \item \textbf{中断屏蔽与优先级}：硬件规定了各中断源的固定优先级，并提供屏蔽位（PSW 中的中断允许位、中断控制器的屏蔽寄存器）；OS 通过设置屏蔽来决定处理某个中断时允许哪些中断嵌套进来——又是“硬件机制 + 软件策略”。上半部关中断、下半部开中断，就是 OS 利用这一机制作出的策略选择。
+\end{itemize}
+
+\textbf{Linux 为什么引入上半部和下半部？}
+\begin{itemize}
+    \item \textbf{矛盾}：处理中断时往往要关中断（至少屏蔽同一条中断线），否则处理到一半又被同类中断打断，数据结构会不一致。但如果关中断时间太长，其他中断就会被延迟甚至丢失（例如网卡缓冲区溢出导致丢包）。偏偏有些中断的工作量很大（如网络收包要经过整个协议栈）。
+    \item \textbf{解决}：把处理分成两部分。\textbf{上半部}（硬中断处理程序）在关中断状态下运行，只做最紧急、最少的工作：应答设备、把数据从设备拷到内存、安排下半部，然后立刻返回。\textbf{下半部}在开中断状态下稍后完成剩余的大部分工作，期间可以再响应新的中断。Linux 的下半部机制有 softirq、tasklet、workqueue（workqueue 运行在内核线程中，可以睡眠）。
+    \item 老师的比喻：\textbf{战地医院}——伤员送来先做紧急止血包扎（上半部），稳定后再送到后方做完整手术（下半部），这样前线能接收更多伤员。
+    \item \textbf{例（联系计网）}：网卡收到数据包，通过 DMA 写入内存中的环形缓冲区并发中断 $\to$ 上半部：应答网卡，关闭该网卡的中断，触发 \cd{NET_RX} softirq $\to$ 下半部：\textbf{NAPI} 以轮询方式一次批量取出多个包，交给协议栈（IP、TCP）处理，放入对应 socket 的接收队列，唤醒阻塞在 \cd{recv} 上的进程，最后重新开启网卡中断。高负载时用轮询代替“每个包一次中断”，避免中断风暴。
+\end{itemize}
+
+\textbf{其他软硬件配合的例子}（课件思考题）：虚拟内存（MMU 硬件完成地址翻译，缺页时交给 OS 处理）、DMA（设备直接访问内存，完成后中断通知）、COW（OS 把页设为只读，硬件在写时产生保护异常）、原子指令 + 锁（硬件提供 \cd{amoswap} 等原子指令，软件构建自旋锁）、定时器 + 调度（硬件定时发中断，软件决定切换谁）。共同模式：\textbf{硬件提供快速、原子的机制，软件实现灵活的策略}。
+
+\subsection{IA32 体系结构对中断的支持（了解概念即可）}
+
+\textbf{基本概念}：x86 的\textbf{中断}由硬件信号引发，分为可屏蔽中断（INTR 引脚，受 EFLAGS.IF 控制）和不可屏蔽中断（NMI，用于严重硬件故障）；\textbf{异常}由指令执行引发，x86 定义了大约 20 种，其中某些异常在调用处理程序之前由 CPU 产生\textbf{硬件出错码}并压入内核栈；\textbf{系统调用}是异常的一种，是用户态到内核态的唯一（主动）入口。\textbf{中断控制器}（8259A PIC 或 APIC）负责把设备的硬件中断信号转换为中断向量号，再发给 CPU。
+
+\textbf{实模式与保护模式的向量表}：实模式下的\textbf{中断向量表 IVT} 位于内存 0 地址，每项 4 字节（段地址:偏移），入口地址 = 段地址左移 4 位 + 偏移；它不支持 CPU 运行状态的切换，中断处理与普通过程调用相似。保护模式下改用\textbf{中断描述符表 IDT}，每项是一个 8 字节的\textbf{门描述符}。
+
+\textbf{四种门描述符}：
+\begin{itemize}
+    \item \textbf{任务门}：中断发生时，要取代当前进程的那个进程的 TSS 选择符存在任务门中，通过硬件任务切换来处理（Linux 不使用）。
+    \item \textbf{中断门}：给出段选择符和处理程序的段内偏移；\textbf{通过中断门后系统自动禁止中断}（清除 IF）。用于外部中断。
+    \item \textbf{陷阱门}：与中断门类似，但\textbf{通过陷阱门后不会自动关中断}。用于异常和系统调用。
+    \item \textbf{调用门}：用于通过 \cd{call} 指令跨特权级调用。
+\end{itemize}
+
+\textbf{两次查表找到入口}：中断向量号 $i$ $\to$ 通过 IDTR 找到 IDT，取出第 $i$ 项门描述符（含段选择符、段内偏移、DPL）$\to$ 通过 GDTR 找到 GDT，用段选择符中的索引取出段描述符，得到段基址 $\to$ 处理程序入口 = 段基址 + 段内偏移。
+
+\textbf{中断/异常的硬件处理过程}：(1) 确定与中断或异常关联的向量 $i$；(2) 通过 IDTR 找到 IDT，获得第 $i$ 项中断描述符；(3) 从 GDTR 得到 GDT 地址，结合段选择符取出段描述符，得到处理程序所在段的基址；(4) 特权级检查（对 \cd{int n} 指令，要求门的 DPL $\ge$ 当前 CPL，防止用户程序随意调用内核入口）；(5) 检查是否发生了特权级变化，如果是，从 \textbf{TSS} 中取出新特权级的 SS:ESP 切换到内核栈，并把旧的 SS:ESP 压入新栈；(6) 硬件压栈保存 EFLAGS、CS、EIP，如果有硬件出错码也压栈；(7) 如果是中断门，清 IF 位；(8) 用段基址 + 偏移找到处理程序入口，执行其第一条指令。此时内核栈从高地址到低地址依次是：[旧 SS][旧 ESP][EFLAGS][CS][EIP][出错码（若有）]。
+
+\subsection{系统调用}
+
+\textbf{定义}：系统调用是用户在编程时可以调用的 OS 功能，是一种特殊的过程调用，由特殊的机器指令（访管指令）实现。课件说它是“\textbf{OS 提供给编程人员的唯一接口}”——准确理解为：它是用户程序\textbf{主动}请求内核服务的唯一接口（用户态进入内核还有中断和其他异常两条路，但那不是程序主动请求的）。系统调用使 CPU 从用户态陷入内核态，利用它可以动态请求和释放资源、完成与硬件相关的工作、控制程序的执行。每个 OS 都提供几百个系统调用（Linux x86-64 约 450 个，xv6 只有 21 个），分为进程控制、进程通信、文件操作、目录操作、设备管理、信息维护等类别，接口标准是 POSIX。
+
+\textbf{系统调用机制的设计四要素}（课件图，体现机制与策略分离）：
+\begin{enumerate}
+    \item 利用\textbf{中断/异常机制}支持系统调用服务的实现；
+    \item 选择一条特殊指令——\textbf{陷入指令（访管指令）}，引发异常，完成用户态到内核态的切换；
+    \item 每个系统调用事先给定一个编号——\textbf{系统调用号（功能号）}，并约定参数的传递方式；
+    \item \textbf{系统调用表}：存放各系统调用服务例程的入口地址，用系统调用号作下标。
+\end{enumerate}
+
+\textbf{参数传递的三种方法}：
+\begin{itemize}
+    \item \textbf{由陷入指令自带参数}：陷入指令长度有限，还要携带系统调用号，只能自带很少的参数（现已不用）。
+    \item \textbf{通过通用寄存器传递}：OS 和用户程序都能访问这些寄存器，速度最快，是主流做法；缺点是寄存器个数限制了参数数量（Linux 最多 6 个，xv6 用 \cd{a0}–\cd{a5}）。
+    \item \textbf{在内存中开辟专用堆栈区传递}：参数放在内存中，只把地址（指针）传给内核，数量不受限制。但内核必须\textbf{检查地址是否合法}，并用 \cd{copy_from_user}（xv6 的 \cd{copyin}）把数据拷进内核，否则用户可以传一个内核地址让内核替它读写敏感数据。
+\end{itemize}
+
+\textbf{系统调用的执行过程}：CPU 执行到陷入指令时，(1) \textbf{中断/异常机制}：硬件保护现场，通过查中断向量表把控制权交给系统调用总入口程序；(2) \textbf{总入口程序}：保存现场，把参数保存到内核栈，通过查系统调用表把控制权交给相应的服务例程；(3) 执行系统调用服务例程；(4) 恢复现场，返回用户程序。
+
+\textbf{实现系统调用需要哪些准备工作？}
+\begin{itemize}
+    \item \textbf{静态准备}：把内核函数封装成库函数（API）供用户调用；硬件提供访管指令和陷入机制；编译器支持（生成按约定传参并执行陷入指令的代码）；OS 初始化时设置好中断向量表中的系统调用入口，确定系统调用编号和参数传递方式，建立系统调用表。
+    \item \textbf{动态执行}：陷入内核 $\to$ 进入总入口程序 $\to$ 保存现场（压栈）$\to$ 查表分派 $\to$ 执行服务例程 $\to$ 返回。
+\end{itemize}
+
+\textbf{例：用汇编直接发起系统调用}（课件 \cd{Hello!} 程序）：\par
+\begin{lstlisting}
+movl $4, %eax        # eax = 4：write 的系统调用号
+movl $1, %ebx        # 参数1：fd = 1（标准输出）
+movl $output, %ecx   # 参数2：缓冲区地址
+movl $len, %edx      # 参数3：长度
+int  $0x80           # 陷入内核
+movl $1, %eax        # eax = 1：exit 的系统调用号
+movl $0, %ebx        # 参数：退出码 0
+int  $0x80
+\end{lstlisting}
+x86 Linux 中常见的调用号：1 \cd{exit}、2 \cd{fork}、3 \cd{read}、4 \cd{write}、5 \cd{open}、6 \cd{close}、7 \cd{waitpid}、11 \cd{execve}。
+
+\textbf{Linux 在 x86 上的实现（2.6 版本）}：
+\begin{itemize}
+    \item \textbf{陷入指令}选择 \cd{int $0x80}。系统初始化时（\cd{sched_init()} 中）调用 \cd{set_system_gate}（参数为 \cd{0x80} 和 \cd{&system_call}），初始化 IDT 第 128 号门描述符：第 2、3 字节为内核代码段选择符 \cd{__KERNEL_CS}；第 0、1、6、7 字节为偏移量，即 \cd{system_call()} 第一条指令的地址；\textbf{门类型为 15，即陷阱门}；\textbf{DPL 为 3}。
+    \item \textbf{为什么用陷阱门？} 陷阱门不自动关中断。系统调用可能执行很长时间，甚至要睡眠等待 I/O，如果关着中断，整个系统就无法响应时钟和设备，失去响应能力。
+    \item \textbf{为什么 DPL = 3？} 用户程序执行 \cd{int n} 时，硬件要求门的 DPL $\ge$ 当前 CPL（3），否则产生一般保护错。只有 0x80 号门的 DPL 是 3，其他向量（如 14 号缺页）的 DPL 都是 0；如果用户执行 \cd{int 14} 想伪造一次缺页，会直接触发保护错。这样就保证了用户态\textbf{只有一个}合法的入口。
+    \item \textbf{执行 \cd{int $0x80} 时硬件做的事}：由于特权级从 3 变为 0，要切换栈：CPU 从 TSS 中装入新的 SS:ESP，指向内核栈；把用户栈的 SS、ESP 以及 EFLAGS、用户态 CS、EIP 压栈（返回时用）；EFLAGS 压栈后复位 TF，IF 保持不变；用 128 在 IDT 中找到门描述符，把其中的段选择符装入 CS；代码段描述符中的基址 + 陷阱门中的偏移，定位到 \cd{system_call()} 的入口。
+    \item \textbf{参数约定}：\textbf{EAX 存放系统调用号，也用来存放返回值}；参数依次放在 EBX、ECX、EDX、ESI、EDI（不超过 6 个，第 6 个用 EBP）。进入内核后，\cd{system_call} 把这些寄存器保存到内核栈上。
+\end{itemize}
+
+\textbf{\cd{system_call} 的关键代码}：\par
+\begin{lstlisting}
+system_call:
+    pushl %eax                  # 保存系统调用号
+    SAVE_ALL                    # 保存其余寄存器
+    cmpl $(NR_syscalls), %eax   # 检查调用号是否合法
+    jb   nobadsys
+    movl $(-ENOSYS), 24(%esp)   # 非法：返回值置为 -ENOSYS
+    jmp  ret_from_sys_call
+nobadsys:
+    call *sys_call_table(,%eax,4)  # 以 eax 为下标查系统调用表
+    movl %eax, EAX(%esp)        # 返回值写回栈中保存 eax 的位置
+    jmp  ret_from_sys_call
+\end{lstlisting}
+要点：(1) 必须检查调用号是否越界，否则用户传一个很大的 \cd{eax}，内核就会把表外的任意内存当作函数指针调用；(2) \texttt{sys\_call\_table(,\%eax,4)} 表示“表基址 + eax $\times$ 4”，每项是一个 4 字节的函数地址；(3) 返回值写回栈中 eax 的位置，\cd{RESTORE_ALL} 恢复寄存器后，用户程序就在 \cd{eax} 中看到返回值（xv6 中对应 \cd{p->trapframe->a0 = 返回值}）。
+
+\textbf{\cd{SAVE_ALL} 的压栈顺序}是 es、ds、eax、ebp、edi、esi、edx、ecx、ebx，因此栈顶起依次是 ebx、ecx、edx……恰好对应 C 函数的第 1、2、3……个参数，服务例程（用 \cd{asmlinkage} 声明，表示从栈上取参数）可以直接把它们当作参数使用。\ez 整个内核栈的形成顺序：\imp{先由硬件压 SS、ESP、EFLAGS、CS、EIP $\to$ 再由软件压系统调用号（\texttt{pushl \%eax}）$\to$ 最后 \cd{SAVE_ALL}}。
+
+\textbf{系统调用表} \cd{sys_call_table} 定义在 entry.S 中，按调用号依次存放 \cd{sys_exit}、\cd{sys_fork}、\cd{sys_read}、\cd{sys_write}…… 的地址。\textbf{用户态的封装例程}（C 库）负责：把参数从用户栈装入 EBX、ECX 等寄存器，把调用号装入 EAX，执行 \cd{int $0x80}；返回后如果 EAX 是负数（出错），就把它取反后存入全局变量 \cd{errno}，并返回 $-1$。这就是“系统调用失败时返回 $-1$，原因看 errno”这一约定的来历。
+
+\textbf{完整执行流程}：用户态调用 C 库的 \cd{write()} $\to$ 封装例程准备参数，执行 \cd{int $0x80} 产生一次异常 $\to$ CPU 以 0x80 查 IDT，找到并执行 \cd{system_call()} $\to$ \cd{system_call()} 把参数保存在内核栈，以调用号查系统调用表，调用 \cd{sys_write()} $\to$ \cd{sys_write()} 执行完后，经 \cd{ret_from_sys_call()} 返回用户程序。
+
+\textbf{如何增加一个新的系统调用}：Linux：用 \cd{SYSCALL_DEFINEn} 宏实现服务例程，在 \cd{syscall_64.tbl} 中登记一个新编号，重新编译内核；用户程序通过 \cd{syscall(编号, 参数...)} 调用。xv6：在 \cd{syscall.h} 中定义新的调用号 $\to$ 在 \cd{syscall.c} 的 \cd{syscalls[]} 数组中加一项 $\to$ 在 \cd{sysproc.c} 等文件中实现 \cd{sys_xxx} $\to$ 在 \cd{usys.pl} 中加入用户态桩代码 $\to$ 在 \cd{user.h} 中声明函数原型。
+
+\subsection{机制与策略分离}
+
+\textbf{机制}（mechanism）回答“\textbf{怎么做}”：固定、通用、稳定的底层实现。\textbf{策略}（policy）回答“\textbf{做什么、选哪个}”：可以替换、调整的上层决策。分离的好处是：改变策略时不需要修改机制，同一个机制可以支持多种策略。
+
+\textbf{内核的进入与退出}（课件图）：三个入口——异常（代码执行出错）、系统调用（经系统调用接口和系统调用表）、中断（来自外部设备，经设备驱动）——都经过\textbf{中断向量表}进入内核。
+
+课上的三个例子（分析题可以直接套用）：
+\begin{enumerate}
+    \item \textbf{中断/异常机制}是机制；\textbf{中断向量表、系统调用表里填什么}是策略。
+    \item \textbf{硬件中断优先级固定}是机制；OS 通过\textbf{屏蔽/开放}某些中断来改变实际的响应顺序是策略。
+    \item “\textbf{按优先级选进程}”是机制；\textbf{怎么设置、调整优先级}（优先级继承、Windows 动态提升）是策略。
+\end{enumerate}
+其他例子：时钟中断（如何夺回 CPU）是机制，时间片多长、下一个选谁是策略；特权级 + 页表权限位是机制，具体的安全策略是策略；RISC-V 的委托寄存器是机制，委托哪些 trap 给 S 态是策略。\textbf{系统调用本身就是机制与策略分离的典型实例}：进入内核的通路（陷入指令 + 中断向量表 + 总入口）是固定的，进入后做什么由系统调用号和系统调用表决定，可以随时增加和修改。
+
+\subsection{xv6 源码阅读题（上游 xv6-riscv）}
+
+\Q{(1) xv6-riscv 有几个特权模式？启动阶段特权模式如何转换？（boot）}
+三个：M、S、U。转换过程：
+\begin{enumerate}
+    \item \cd{_entry}（entry.S）和 \cd{start()}（start.c）运行在 \textbf{M 态}。
+    \item 在 \cd{start()} 末尾执行 \cd{mret}：此前已设置 \cd{mstatus.MPP = S}、\cd{mepc = main}，所以 \cd{mret} 使处理器从 \textbf{M 态切换到 S 态}，并跳到 \cd{main()}。
+    \item \cd{main()}、\cd{userinit()}、\cd{scheduler()} 都在 S 态运行。
+    \item 第一个进程被调度：\cd{scheduler} $\to$ \cd{swtch} $\to$ \cd{forkret} $\to$ \cd{usertrapret}（设置 \cd{sepc} = 0，清除 \cd{sstatus.SPP}）$\to$ \cd{userret}（trampoline.S）执行 \cd{sret}：处理器从 \textbf{S 态切换到 U 态}，从 initcode 的地址 0 开始执行。
+    \item initcode 执行 \cd{ecall}（调用 \cd{exec("/init")}），这是第一次从 \textbf{U 态陷入 S 态}。
+\end{enumerate}
+
+\Q{(2) 系统调用号、参数、返回值分别通过哪些寄存器传递？（syscall）}
+\imp{系统调用号在 \cd{a7}，参数在 \cd{a0}–\cd{a5}，返回值在 \cd{a0}}。用户态桩代码（由 \cd{usys.pl} 生成的 \cd{usys.S}）是：\cd{li a7, SYS_write; ecall; ret}，参数已经按 C 调用约定放在 \cd{a0} 开始的寄存器中了。陷入后 \cd{uservec} 把所有寄存器保存到 trapframe；内核的 \cd{syscall()} 取 \cd{num = p->trapframe->a7}，若合法则执行 \cd{p->trapframe->a0 = syscalls[num]()}，否则打印 “unknown sys call” 并把 \cd{a0} 置为 $-1$。服务例程用 \cd{argint}、\cd{argaddr}、\cd{argstr} 从 trapframe 中取第 $n$ 个参数。返回用户态时 \cd{userret} 从 trapframe 恢复寄存器，用户就在 \cd{a0} 中看到返回值。对照 Linux x86：\cd{a7} $\leftrightarrow$ \cd{eax}，\cd{a0}–\cd{a5} $\leftrightarrow$ \cd{ebx} 等，\cd{syscalls[]} $\leftrightarrow$ \cd{sys_call_table}。
+
+\Q{(3) 进行进程上下文切换时，需要保存和恢复哪些寄存器？（trap）}
+分两层保存：
+\begin{itemize}
+    \item \textbf{用户态 $\to$ 内核态（trap）}：\cd{uservec}（trampoline.S）把 \textbf{31 个通用寄存器}（除 \cd{x0} 外全部）保存到当前进程的 \cd{p->trapframe}；\cd{usertrap} 再把 \cd{sepc}（用户 PC）存入 \cd{trapframe->epc}。trapframe 中还预存了内核的 \cd{kernel_satp}（内核页表）、\cd{kernel_sp}（该进程内核栈顶）、\cd{kernel_trap}（\cd{usertrap} 地址）、\cd{kernel_hartid}，供 \cd{uservec} 切换到内核环境时使用。之所以要全部保存，是因为 trap 可能在用户程序的任意时刻发生，编译器无法事先保存任何寄存器。
+    \item \textbf{内核中的进程切换（\cd{swtch}）}：只保存 \textbf{14 个}寄存器——\cd{ra}、\cd{sp}、\cd{s0}–\cd{s11}（即 \cd{struct context}）。原因：\cd{swtch} 是被当作普通函数调用的，按照 RISC-V 调用约定，caller-saved 寄存器（\cd{t0}–\cd{t6}、\cd{a0}–\cd{a7}）已经由编译器在调用点之前保存好了，\cd{swtch} 只需负责 callee-saved 寄存器。它也\textbf{不保存 PC}：\cd{ra} 记录了返回地址，\cd{swtch} 最后的 \cd{ret} 就跳到新进程上一次调用 \cd{swtch} 的地方继续执行。
+\end{itemize}
+
+\Q{(4) 简要说明 \cd{stvec}、\cd{sepc}、\cd{scause}、\cd{sstatus} 的作用。（trap）}
+\begin{btab}{P{0.174}P{0.826}}
+\trow{\cd{stvec} & trap 处理程序的入口地址。在用户态运行时指向 trampoline 页中的 \cd{uservec}；进入内核后 \cd{usertrap} 立即把它改为 \cd{kernelvec}（这样内核中再发生 trap 时走内核的处理路径）；返回用户态前 \cd{usertrapret} 再改回 \cd{uservec}}
+\trow{\cd{sepc} & 发生 trap 时的 PC。\cd{usertrap} 把它存入 \cd{trapframe->epc}，因为之后可能切换到别的进程，别的进程的 trap 会覆盖 \cd{sepc}；系统调用时 \cd{epc += 4}，使返回后执行 \cd{ecall} 的下一条指令；\cd{usertrapret} 把 \cd{epc} 写回 \cd{sepc}，\cd{sret} 跳到这里}
+\trow{\cd{scause} & trap 的原因。\cd{usertrap} 判断：等于 8 是系统调用；否则交给 \cd{devintr()} 判断是不是设备中断或定时器中断；都不是则视为错误，打印信息并杀死进程}
+\trow{\cd{sstatus} & \cd{usertrap} 检查 SPP 位，确认 trap 确实来自用户态；\cd{usertrapret} 清除 SPP（使 \cd{sret} 回到 U 态）并置位 SPIE（使回到用户态后中断是打开的）；\cd{intr_on()}/\cd{intr_off()} 通过设置/清除 SIE 位开关中断}
+\end{btab}
+\cd{usertrap()} 的整体流程：检查 SPP 确认来自用户态 $\to$ \cd{w_stvec(kernelvec)} $\to$ 保存 \cd{sepc} 到 \cd{epc} $\to$ 如果 \cd{scause == 8}：\cd{epc += 4}，\cd{intr_on()} 开中断（系统调用可能执行较久，允许被中断，这一点类似 Linux 用陷阱门），然后调用 \cd{syscall()}；否则调用 \cd{devintr()}；都不是则 \cd{setkilled(p)} $\to$ 若进程已被杀则 \cd{exit} $\to$ \imp{\cd{if(which_dev == 2) yield();}}：如果是定时器中断，就主动让出 CPU，这正是\textbf{抢占式调度的起点} $\to$ \cd{usertrapret()} 返回用户态。
+
+\Q{(5) 总结 \cd{devintr} 和 \cd{uartintr} 的内部流程，以及 \cd{devintr} 调用 \cd{uartintr} 的判断条件。（interrupt）}
+\textbf{\cd{devintr()}}：
+\begin{itemize}
+    \item 如果 \cd{scause} 等于 \cd{0x8000000000000009}（最高位为 1 表示中断，9 表示 S 态外部中断）：调用 \cd{plic_claim()} 向 PLIC 询问是哪个设备发的中断，得到 \cd{irq}。若 \cd{irq == UART0_IRQ}（QEMU virt 机器上为 10），调用 \cd{uartintr()}；若为 \cd{VIRTIO0_IRQ}，调用磁盘中断处理 \cd{virtio_disk_intr()}。处理完后调用 \cd{plic_complete(irq)} 通知 PLIC 该中断已处理完毕，可以再次发送。返回 1。
+    \item 如果 \cd{scause} 等于 \cd{0x8000000000000005}（S 态定时器中断）：调用 \cd{clockintr()}（\cd{ticks++}，唤醒因 \cd{sleep} 系统调用而等待的进程，设置下一次定时器中断时间），返回 2。
+    \item 否则返回 0，表示不认识的 trap。
+\end{itemize}
+（旧版 xv6 的定时器中断先在 M 态由 \cd{timervec} 处理，再转换成 S 态的\textbf{软件中断}（\cd{scause} 为 \cd{...01}），需要清除 \cd{sip} 中的 SSIP 位；不同版本略有差异。）
+
+\textbf{\cd{uartintr} 被调用的条件}：发生的是 \textbf{S 态外部中断}，\textbf{并且} PLIC 报告的中断号是 \cd{UART0_IRQ}。
+
+\textbf{\cd{uartintr()}}：循环调用 \cd{uartgetc()}（读线路状态寄存器 LSR，若“数据就绪”位为 1，则从接收保持寄存器 RHR 读出一个字符），对每个字符调用 \cd{consoleintr(c)}：处理行编辑（退格、Ctrl-U 删除整行）、回显到屏幕、把字符存入 \cd{cons.buf}；遇到回车或 Ctrl-D 时，调用 \cd{wakeup(&cons.r)} 唤醒在 \cd{consoleread} 中睡眠等待输入的进程（如 shell）。读完所有字符后，再调用 \cd{uartstart()} 继续发送输出缓冲区中待发送的字符。这体现了上半部/下半部的思想：中断处理程序只负责把字符放进缓冲区并唤醒进程，真正把数据拷给用户程序是在进程上下文（\cd{consoleread}）中完成的。
