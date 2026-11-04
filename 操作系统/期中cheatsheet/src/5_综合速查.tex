@@ -1,0 +1,107 @@
+\needspace{10\baselineskip}
+\section{综合速查：主线流程、答题方法、易错点}
+
+\subsection{考试信息与答题方法}
+
+考试为\textbf{开卷}，占总评 10\%。老师明确\textbf{不要求记忆}的内容：Linux CFS 算法的细节（“过于复杂”）、x86 中断/异常的具体分类、x86 门描述符的寻址细节（了解概念即可）。开卷意味着定义和表格都可以翻到，但\textbf{流程题、分析题、“为什么”题}翻不到现成的答案，必须自己把知识串起来——这正是往年错得最多的几类题。老师反复强调的答题方法：
+\begin{enumerate}
+    \item \textbf{抓住核心 20\%}：中断异常机制 + 调度时机，再加上虚拟存储，是全课最核心的 20\%，其余 80\% 都可以由它们推出来。
+    \item \textbf{无从下手时，从数据结构切入}：每个模块都依赖特定的数据结构。中断异常 $\to$ 中断向量表 + 系统调用表；进程 $\to$ PCB；地址空间 $\to$ \cd{mm_struct} 和 VMA；调度 $\to$ 就绪队列 + PCB 中的调度字段。先写出数据结构，再说明事件发生时这些结构怎样变化，答案就有了骨架。
+    \item \textbf{先明确场景，再给结论}：架构（x86 还是 RISC-V）、OS（Linux、Windows 还是 xv6）、位宽和版本（上游 xv6-riscv 还是 xv6-k210）不同，答案就不同。例：问“虚拟地址空间有多大”，要先说明是 x86-64 四级页表（48 位）还是 RISC-V Sv39（39 位）。
+    \item \textbf{硬件先、软件后，不交错}：任何事件的处理顺序都是：硬件完成响应 $\to$ 交给软件处理事件 $\to$ 进程状态和队列发生变化 $\to$ 决定是否调度 $\to$ 返回用户态（信号在返回前的最后时刻处理）。
+    \item \textbf{机制与策略分离}：几乎每道分析题都能用上——先指出哪部分是固定的机制，哪部分是可调整的策略，再分析策略的选择。
+    \item \textbf{调度算法要多维度分析}：是否抢占？会不会饥饿？偏好哪类进程（I/O 密集型/CPU 密集型、长/短）？开销多大？响应时间、周转时间、吞吐量如何？是否需要预知运行时间？适用于什么场景？像提方案一样逐项讨论，而不是背优缺点。
+\end{enumerate}
+
+\subsection{全课主线：一次 \texttt{read()} 的完整生命周期 \bk}
+
+老师说“已经重复讲了六七次，必须牢记先后顺序”。能把下面这条时间线默写出来，流程题基本就稳了。
+
+\textbf{阶段一：进程 A 发起读请求}（“只写一个阶段会丢分”）：
+\begin{enumerate}
+    \item \textbf{用户态库函数}：把 \cd{read} 的系统调用号放入 \cd{a7}（x86 为 \cd{eax}），把参数（fd、buf、n）放入参数寄存器，执行陷入指令（RISC-V \cd{ecall} / x86 \cd{int $0x80}）。
+    \item \textbf{硬件}：从用户态切换到内核态；保存少量关键现场（PC、PSW、栈指针；x86 还要从 TSS 取内核栈并切换过去）；按中断号查\textbf{中断向量表}，跳到系统调用总入口。硬件的工作到此为止。
+    \item \textbf{软件（内核汇编入口）}：保存其余所有寄存器（Linux 的 \cd{SAVE_ALL}，xv6 存入 trapframe）。
+    \item \textbf{软件}：用系统调用号查\textbf{系统调用表}，找到并调用 \cd{sys_read}——\imp{这是第二张表}。
+    \item \cd{sys_read} 发现数据不在缓存中，向磁盘发出读请求（交给 DMA/设备控制器），然后让 A 执行阻塞原语：A 的状态由\textbf{运行变为阻塞}，PCB 进入该设备的等待队列。
+    \item CPU 空出来了，进入\textbf{调度}：选出进程 B，进行上下文切换（保存 A 的上下文，切换页表，恢复 B 的上下文），B 开始运行。
+\end{enumerate}
+\textbf{阶段二：I/O 完成}：
+\begin{enumerate}[resume]
+    \item B 运行期间，磁盘读完数据，发出\textbf{中断}（这是异步事件，与 B 无关）$\to$ 硬件响应（同第 2 步）$\to$ 执行磁盘中断处理程序（上半部：应答设备，数据已由 DMA 放入内核缓冲区）。
+    \item 内核发现进程 A 等待的数据到了，执行唤醒原语：A 由\textbf{阻塞变为就绪}，进入就绪队列（\imp{不能直接变为运行}）。
+    \item 中断处理完，返回用户态之前检查是否需要调度：如果 A 的优先级比 B 高且系统允许抢占，就设置 \cd{need_resched}，切换到 A；否则 B 继续运行，A 在就绪队列中排队，等以后被调度。
+    \item A 被调度后，在\textbf{返回用户态之前的最后时刻}检查 \cd{sigpending}，处理所有待处理的信号（\cd{sys_read} 把数据从内核缓冲区拷贝到用户的 buf，这一步在 A 的上下文中完成）。
+    \item \cd{RESTORE_ALL} 恢复寄存器，执行 \cd{iret}/\cd{sret} 回到陷入指令的\textbf{下一条}指令；\cd{read} 返回读到的字节数。
+\end{enumerate}
+\textbf{这条线上的考点对应}：第 2、3 步是软硬件交接；第 2、4 步是两张表；第 5–6 步与第 7–8 步是 read/write 的两个阶段；第 5、8 步是状态转换规则；第 6、9 步是调度时机与抢占；第 10 步是信号处理的时机；第 11 步是返回地址。
+
+\subsection{事件分析模板（分析题最常见的出法）}
+
+对任何一个事件，按顺序回答：\textbf{从哪条路进入内核}（系统调用、异常还是中断）$\to$ \textbf{硬件做了什么} $\to$ \textbf{哪个进程的状态怎样变化} $\to$ \textbf{哪个队列怎样变化} $\to$ \textbf{会不会触发调度} $\to$ \textbf{如果允许抢占，会不会换进程} $\to$ \textbf{最后返回到哪条指令}。
+
+\begin{btab}{P{0.160}P{0.280}P{0.280}P{0.280}}
+\thead{事件 & 进入内核的途径 & 状态与队列的变化 & 是否调度}
+\trow{\cd{fork} & 系统调用 & 新建子进程的 PCB，放入就绪队列（若有 COW：复制页表，父子的页都标为只读） & 就绪队列变了；若子进程优先级更高且可抢占，则切换；返回 \cd{ecall} 的下一条}
+\trow{时钟中断 & 中断 & 当前进程的时间片计数器减 1；减到 0 时，当前进程由运行变为就绪（放到队尾） & 只有时间片用完才调度；返回被打断的下一条指令}
+\trow{磁盘中断 & 中断 & 等待该 I/O 的进程由阻塞变为就绪，从等待队列移到就绪队列 & 若被唤醒的进程优先级更高且可抢占，则切换}
+\trow{\cd{read}/\cd{wait} & 系统调用 & 当前进程由运行变为阻塞，进入相应的等待队列 & 必须调度（CPU 空出来了）}
+\trow{缺页 & 异常（故障） & 若需要读盘，当前进程由运行变为阻塞；读完后变为就绪 & 读盘期间调度其他进程；处理完后返回\textbf{重新执行出错的那条指令}}
+\trow{写 COW 页 & 异常（保护性故障） & 复制该页，改为可写，进程不阻塞 & 一般不调度；重新执行写指令}
+\trow{\cd{exit} & 系统调用 & 当前进程由运行变为终止（ZOMBIE）；唤醒正在 \cd{wait} 的父进程（阻塞变为就绪） & 必须调度，且永不返回}
+\trow{Ctrl+C / \cd{kill} & 键盘中断 / 系统调用 & 两者都是由\textbf{内核}向目标进程发送信号（在其 PCB 的信号位向量中置位），只是进入内核的路径不同 & 目标进程在返回用户态前处理信号；这与“是否可抢占”无关}
+\trow{非法指令 / 除零 & 异常 & 内核向进程发送信号（SIGILL/SIGFPE），默认动作是终止进程 & 进程终止后调度其他进程}
+\end{btab}
+
+\subsection{易错点速查}
+\begin{btab}{P{0.050}P{0.475}P{0.475}}
+\thead{\# & 错误说法 & 正确说法与理由}
+\trow{1 & 中断向量表和系统调用表是同一张表 & 是两张表。中断向量表由硬件用中断号查，系统调用只占其中一项（x86 Linux 为 0x80）；进入总入口后，再由软件用系统调用号查系统调用表（往年错 30\%–40\%）}
+\trow{2 & COW 是 Linux 发明的 & COW 是存储管理中早已有的技术，Linux 拿来优化 fork（往年错 40\%–50\%）}
+\trow{3 & \cd{read} 的过程是：陷入 $\to$ 读数据 $\to$ 返回 & 分两个阶段：发出 I/O 后进程阻塞、让出 CPU；I/O 完成后由中断唤醒，再被调度}
+\trow{4 & 处理事件时软件和硬件交替工作 & 硬件先、软件后，不交错；处理完\textbf{先进调度}，再返回用户态}
+\trow{5 & OS 提供给进程的是物理内存 & 是虚拟地址空间（myval 实验：两个进程同一地址存着不同的值）}
+\trow{6 & 访管指令是特权指令 & 是非特权指令，否则用户态无法执行它，也就进不了内核}
+\trow{7 & 阻塞进程等到事件后直接运行 & 先进入就绪态排队；不存在“阻塞 $\to$ 运行”和“就绪 $\to$ 阻塞”两种转换}
+\trow{8 & 中断/异常处理完都返回下一条指令 & 中断、陷入返回下一条；故障（如缺页）重新执行本条；终止不返回}
+\trow{9 & 时钟中断就是时间片到 & 每次时钟中断把时间片计数器减 1，减到 0 才是时间片用完}
+\trow{10 & 优先级就是优先数 & 优先数是优先级的量化数值，答题时要先说清“数值越大优先级越高还是越低”}
+\trow{11 & 优先级反转在任何优先级调度中都会出现 & 只在\textbf{抢占式}的优先级调度中出现}
+\trow{12 & 用户级线程能在多核上并行 & 不能，内核只看到一个进程，只给它分配一个 CPU}
+\trow{13 & Linux 的 pthread 是用户级线程 & Pthreads 只是 API 标准；今天 Linux 的 NPTL 是 1:1 核心级线程}
+\trow{14 & 信号会排队，多次发送就多次处理 & 信号用位向量记录，同类信号不排队；在返回用户态前统一处理}
+\trow{15 & 进程创建后立即执行 & 先进入就绪队列等待调度；执行第一条指令时还会发生缺页}
+\trow{16 & 程序的第一条指令在 \cd{main} 里 & 在 \cd{_start}（动态链接时更早，在动态链接器中）}
+\trow{17 & MLFQ 中因阻塞放弃 CPU 的进程也要降级 & 回到原级、不降级（这正是对 I/O 密集型的偏好）；用完时间片才降级}
+\trow{18 & RR 总比 FCFS 好 & 进程长度相近时，RR 的平均周转时间更差（两个 100ms 进程：199.5 vs 150）}
+\trow{19 & RM 按执行时间分配优先级 & 按周期：周期越短（速率越高），优先级越高}
+\trow{20 & init 进程是 fork 出来的 & 第一个用户进程由 \cd{userinit} 手工构造}
+\trow{21 & Linux 的 \cd{TASK_RUNNING} 就是运行态 & 它同时包含就绪和运行两种状态}
+\trow{22 & xv6 的 fork 使用了 COW & 上游 xv6-riscv 用 \cd{uvmcopy} 真正复制每一页}
+\trow{23 & 硬件保存了全部寄存器 & 硬件只保存少数关键寄存器（PC、PSW 等），其余由软件保存}
+\trow{24 & RISC-V 陷入时硬件会切换到内核栈 & x86 硬件经 TSS 自动换栈；RISC-V 硬件不换，由 \cd{uservec} 用软件换栈、换页表}
+\trow{25 & 内核是一个进程 & 内核不是进程；而且用户态运行的也不只是用户进程，还有守护进程}
+\trow{26 & 缺页发生时进程已经在内核态 & 触发缺页的那一刻在用户态，硬件响应后才进入内核态处理}
+\trow{27 & 命令行命令就是系统调用 & 不是，命令是用户程序；可以用 \cd{strace} 查看它用了哪些系统调用}
+\trow{28 & nice 的范围是 $-19$ 到 20 & 是 $-20$ 到 19，数值越小优先级越高}
+\trow{29 & vruntime 增量 = 实际时间 $\times$ nice / 权重 & 是 实际时间 $\times$ NICE\_0\_LOAD（1024）/ 权重}
+\trow{30 & Windows 线程用完配额就降级 & 不降级（只有被提升过的线程才逐级衰减）；被抢占时回到队首}
+\trow{31 & 系统调用是进入内核的唯一途径 & 它是用户程序\textbf{主动}请求服务的唯一接口；进入内核还有中断和其他异常}
+\trow{32 & 抢占式调度不需要硬件支持 & 必须有时钟中断，否则 OS 无法收回 CPU}
+\trow{33 & 用户级线程阻塞时，线程库显示它为阻塞 & 内核阻塞的是整个进程，线程库中该线程仍显示为 running}
+\trow{34 & Linux 系统调用走中断门 & 走陷阱门（不关中断）、DPL = 3；外部中断才走中断门}
+\end{btab}
+
+\subsection{xv6 源码位置速查}
+
+\begin{btab}{P{0.300}P{0.700}}
+\trow{启动 & \cd{entry.S}（M 态，设栈）$\to$ \cd{start.c}（M 态，设置后 \cd{mret}）$\to$ \cd{main.c}（S 态，初始化）$\to$ \cd{userinit} $\to$ \cd{scheduler}}
+\trow{陷入/系统调用 & \cd{ecall} $\to$ \cd{trampoline.S: uservec} $\to$ \cd{trap.c: usertrap} $\to$ \cd{syscall.c: syscall}（查 \cd{syscalls[]}）$\to$ \cd{usertrapret} $\to$ \cd{userret}（\cd{sret}）}
+\trow{两张表 & 中断向量表 $\leftrightarrow$ \cd{stvec}（指向 \cd{uservec} 或 \cd{kernelvec}）；系统调用表 $\leftrightarrow$ \cd{syscalls[]}}
+\trow{传参 & 调用号在 \cd{a7}，参数在 \cd{a0}–\cd{a5}，返回值在 \cd{a0}；\cd{argint}/\cd{argaddr}/\cd{argstr} 从 trapframe 取参数}
+\trow{设备中断 & \cd{trap.c: devintr}（\cd{plic_claim}）$\to$ \cd{uart.c: uartintr} $\to$ \cd{console.c: consoleintr}}
+\trow{PCB 与状态 & \cd{proc.h: struct proc}、\cd{enum procstate}}
+\trow{fork/exec/wait & \cd{proc.c: fork}（\cd{allocproc} + \cd{uvmcopy}）、\cd{exec.c}、\cd{proc.c: wait/exit}、\cd{sleep/wakeup}}
+\trow{调度与切换 & \cd{proc.c: scheduler/yield/sched/forkret}，\cd{swtch.S}（只存 \cd{ra}、\cd{sp}、\cd{s0}–\cd{s11}）}
+\trow{shell & \cd{user/sh.c: main/runcmd}（EXEC、REDIR、PIPE）}
+\end{btab}

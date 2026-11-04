@@ -7,6 +7,9 @@ legacy/
 *.pptx
 *.xlsx
 
+*.aux
+*.log
+
 CLAUDE.md
 
 .DS_Store

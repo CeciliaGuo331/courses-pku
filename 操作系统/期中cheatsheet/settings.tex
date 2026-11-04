@@ -1,0 +1,178 @@
+% ==============================================================================
+% 页面布局与基础设置 (Page Layout & Core Settings)
+% ==============================================================================
+\usepackage{geometry}
+\geometry{
+    paper=a3paper,
+    landscape,
+    left=0.3cm, right=0.3cm, top=0.3cm, bottom=0.3cm
+}
+
+\usepackage[fontsize=10pt]{fontsize} % 全局 9pt 字号
+\linespread{1.1}                   % 紧凑行距
+\setlength{\parindent}{0pt}         % 禁止全局首行缩进
+
+\usepackage{multicol}               % 多栏排版
+\setlength{\columnsep}{6pt}         % 栏间距
+\setlength{\columnseprule}{0pt}     % 栏分割线
+
+% ==============================================================================
+% 语言、字体与数学支持 (Fonts & Mathematics)
+% ==============================================================================
+\usepackage[scheme=plain]{ctex}     % 中文支持
+\usepackage{fontspec}               % 字体管理
+\IfFontExistsTF{Times New Roman}    % 西文字体；没装 Times New Roman 时用 TeX Gyre Termes（Times 克隆，TeX Live 自带）
+  {\setmainfont{Times New Roman}}
+  {\setmainfont{texgyretermes}[Extension=.otf, UprightFont=*-regular, BoldFont=*-bold,
+                               ItalicFont=*-italic, BoldItalicFont=*-bolditalic]}
+
+\usepackage{amsmath,amssymb}        % 基础数学公式
+\usepackage{mathtools}              % 扩展数学增强
+\usepackage{calc}                   % 长度计算宏包
+
+% 常用数学简写定义
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\bs}[1]{\boldsymbol{#1}}
+
+% ==============================================================================
+% 样式定制 (Styling: Sections, Lists, Colors)
+% ==============================================================================
+\usepackage{xcolor}
+\definecolor{myblue}{RGB}{0, 0, 165}
+\definecolor{blue}{RGB}{0, 133, 255}
+\definecolor{red}{RGB}{210, 0, 0}
+\definecolor{grey}{RGB}{127, 127, 127}
+
+% --- 列表样式定制 ---
+\usepackage{enumitem}
+\setlist[itemize]{leftmargin=*, noitemsep, topsep=0pt, parsep=0pt} % 极紧凑列表
+
+% --- 标题样式定制 (Titlesec) ---
+\usepackage[explicit]{titlesec}
+
+% 重定义 \section (带下划线风格)
+\titleformat{\section}
+  {\normalfont\large\bfseries\fontsize{12pt}{12pt}\color{myblue}}
+  {\thesection.}
+  {2pt}
+  {#1}
+  [{\color{myblue}\titlerule[0.5pt]}]
+\titlespacing*{\section}{0pt}{2pt}{2pt}
+
+% 重定义 \subsection (蓝色加粗风格)
+\titleformat{\subsection}
+  {\normalfont\bfseries\fontsize{10pt}{10pt}\color{myblue}} 
+  {\thesubsection.}
+  {2pt}
+  {#1}
+\titlespacing*{\subsection}{0pt}{1pt}{1pt}
+
+% 设置 subsubsection 的格式
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries\color{myblue}} % 格式：正常字体、正常大小、加粗
+  {\thesubsubsection}               % 标签：显示章节编号
+  {2pt}                             % 编号与标题之间的距离
+  {#1}                                % 标题前的额外代码
+\titlespacing*{\subsubsection}
+  {0pt}      % 左边缩进
+  {0pt}      % 段前间距 (设置为0或很小的值)
+  {0pt}      % 段后间距 (设置为0，紧贴正文)
+
+\titlespacing*{\paragraph}{0pt}{0pt}{4pt}
+
+\titlespacing*{\subparagraph}{0pt}{0pt}{4pt}
+
+\usepackage{enumitem}
+\setlist{noitemsep, topsep=0pt} %调整列表格式
+\usepackage{caption}
+% ==============================================================================
+% 代码块配置 (Code Listings: Stata Support)
+% ==============================================================================
+\usepackage{listings}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  tabsize=4,
+  columns=fullflexible,
+  breaklines=true,
+  breakatwhitespace=true,
+  frame=none,
+  % --- 空格处理 ---
+  showspaces=false,               % 全局空格不显示特殊符号
+  showstringspaces=false,         % 字符串内的空格不显示特殊符号
+  showtabs=false,                 % 制表符不显示特殊符号
+  % --- 行号设置 ---
+  numbers=left, 
+  numberstyle=\tiny\color{gray}, 
+  numbersep=4pt, 
+  xleftmargin=5pt,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+}
+
+\lstdefinelanguage{Stata}{
+  morekeywords={
+    regress, reg, gen, generate, replace, drop, keep,
+    summarize, sum, tabulate, tab, egen,
+    if, in, using, clear,
+    by, bysort, foreach, forvalues,
+    do, run, log, use, save, merge, append,
+    xtset, xtreg, xtivreg,
+    vce, cluster, robust
+  },
+  sensitive=true,
+  morecomment=[l]{*},
+  morestring=[b]",
+}
+
+% ==============================================================================
+% 文档全局间距微调 (Math Spacing Tuning)
+% ==============================================================================
+% ==============================================================================
+% Cheatsheet 追加：表格、行内代码、强调、图
+% ==============================================================================
+\usepackage{tabularx,booktabs,array}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}  % 自动换行的左对齐列
+\setlength{\tabcolsep}{2pt}
+\setlength{\aboverulesep}{0.4pt}
+\setlength{\belowrulesep}{0.4pt}
+\setlist[enumerate]{leftmargin=*, noitemsep, topsep=0pt, parsep=0pt}
+\setlist[description]{leftmargin=0pt, noitemsep, topsep=0pt, parsep=0pt}
+
+\newcommand{\cd}[1]{\texttt{\detokenize{#1}}}       % 行内代码（可含 _ 和 ->）
+\newcommand{\imp}[1]{\textbf{\textcolor{red}{#1}}}   % 重点
+\newcommand{\ez}{\textbf{\textcolor{red}{【易错】}}}
+\newcommand{\bk}{\textbf{\textcolor{red}{【必考】}}}
+\newcommand{\Q}[1]{\par\textbf{\textcolor{myblue}{#1}}\par}  % 问题小标题
+
+\lstset{numbers=none, xleftmargin=0pt, basicstyle=\ttfamily\footnotesize,
+        aboveskip=1pt, belowskip=1pt}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc}
+
+\AtBeginDocument{
+    \setlength{\abovedisplayskip}{1pt}      % 公式上方间距
+    \setlength{\belowdisplayskip}{1pt}      % 公式下方间距
+    \setlength{\abovedisplayshortskip}{0pt} % 短公式上方间距
+    \setlength{\belowdisplayshortskip}{0pt} % 短公式下方间距
+    \setlength{\jot}{0pt}                   % 多行公式行间距
+}
+% --- 可跨栏续排的表格 ---
+% 每一行排成一个独立的单行表格，所有行使用相同的固定列宽，因此上下对齐；
+% 行与行之间允许分栏，放不下时剩下的行接到下一栏。
+\usepackage{needspace}  % 章标题前预留空间，避免标题孤悬栏底
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{\dimexpr #1\linewidth-2\tabcolsep\relax}}
+\newcommand{\tspec}{}
+% \begin{btab}{列格式} ... \end{btab}；表头用 \thead{...}，每行用 \trow{...}
+\newenvironment{btab}[1]
+  {\par\needspace{4\baselineskip}\footnotesize\renewcommand{\tspec}{#1}\setlength{\parskip}{0pt}\vspace{2pt}%
+   \noindent\rule{\linewidth}{0.8pt}\par\nointerlineskip}
+  {\par\nointerlineskip\noindent\rule{\linewidth}{0.8pt}\par\vspace{2pt}}
+\newcommand{\btabular}[2]{\begin{tabular}{@{}#1@{}}\rule{0pt}{2.6ex}#2\end{tabular}}
+\newcommand{\trow}[1]{\par\nointerlineskip\noindent
+  \expandafter\btabular\expandafter{\tspec}{#1}\par}
+\newcommand{\thead}[1]{\trow{#1}\nointerlineskip\noindent\rule{\linewidth}{0.4pt}\par\nopagebreak}

@@ -1,0 +1,185 @@
+\needspace{10\baselineskip}
+\section{操作系统概述（含课件0导论）}
+
+本章分值不大，以概念题为主。要掌握的是：OS 的定义和三个角色、理解 OS 的三种观点、四大特征、多道程序设计与 SPOOLing、各类 OS 的追求目标。课件中的关键技术是\textbf{多道程序设计、中断、通道、SPOOLing}。
+
+\subsection{重点问题}
+
+\Q{Q1-1 UNIX 的名字来历（猜测）？}
+UNIX 的名字来自 \textbf{UNICS}（UNiplexed Information and Computing Service），是对 \textbf{MULTICS}（MULTiplexed Information and Computing Service）的戏仿：Multi（多路）对 Uni（单路）。
+
+背景：MULTICS 由 MIT、贝尔实验室和 GE 在 1963 年合作开发，目标非常宏大（为大量用户提供“像水电一样”的计算服务），但一再拖延，直到 1969 年才发布，贝尔实验室中途退出。退出后，Ken Thompson 在一台闲置的 DEC PDP-7 小型机上写了一个小系统（最初是为了玩星际探险游戏），Brian Kernighan 开玩笑地称它为 UNICS，后来拼写演变为 UNIX。名字本身就体现了 UNIX 的设计哲学：\textbf{简单、小而精}（small is beautiful）。Thompson 与 Dennis Ritchie 因此获得 1983 年图灵奖。
+
+可以对比同时期的失败案例：IBM 的 OS/360 发布时带着已知的上千个错误（Brooks《人月神话》总结了其教训）；MULTICS 也因过于复杂而延期。UNIX 的成功说明“做好少数几件事”比“什么都想做”更可行。
+
+\Q{Q1-2 批处理操作系统有单道批处理和多道批处理之分，区别是什么？}
+\textbf{核心区别}：单道批处理内存中只有\textbf{一个}作业，它做 I/O 时 CPU 只能空等；多道批处理允许\textbf{多个作业同时驻留在内存中}，一个作业遇到 I/O 时，CPU 切去运行另一个作业，于是 CPU 与 I/O 设备可以同时工作。
+\begin{enumerate}
+    \item 多道需要的\textbf{硬件支持}：\textbf{中断}（I/O 完成后通知 CPU）、\textbf{通道}（I/O 不需要 CPU 逐字节参与，才能与计算并行）、\textbf{存储保护}（多个作业同在内存，必须防止互相破坏）。
+    \item 多道需要的 \textbf{OS 功能}：作业调度（选哪些作业进内存）、处理机调度（CPU 给谁）、内存分配、保护。OS 从此变得复杂。
+\end{enumerate}
+
+\begin{btab}{P{0.160}P{0.420}P{0.420}}
+\thead{& 单道批处理 & 多道批处理}
+\trow{内存中作业数 & \textbf{1 个} & \textbf{多个}同时驻留}
+\trow{遇到 I/O 时 & CPU 空等 & CPU 切去运行另一个作业}
+\trow{硬件支持 & 基本不需要 & 中断、通道（I/O 与计算并行）、\textbf{存储保护}}
+\trow{OS 功能 & 作业按顺序自动转接 & 作业调度、内存分配、保护——OS 从此变复杂}
+\trow{特点 & 顺序执行、封闭、结果可再现 & 并发、资源利用率高、吞吐量大；但单个作业的周转时间可能变长；仍然没有交互}
+\end{btab}
+
+\textbf{例（Stallings，课件原表）}：JOB1 计算密集，运行 5 min；JOB2 I/O 密集（使用终端），15 min；JOB3 I/O 密集（使用磁盘和打印机），10 min。
+\begin{itemize}
+    \item \textbf{单道}：只能按顺序执行，总耗时 $5+15+10=\mathbf{30}$ min。三个作业的完成时刻分别是 5、20、30，平均响应时间 $(5+20+30)/3\approx\mathbf{18}$ min，吞吐量 6 jobs/hr。CPU 利用率只有 22\%，因为 JOB2、JOB3 运行期间 CPU 大多在等 I/O。
+    \item \textbf{多道}：三个作业使用的资源几乎不冲突（CPU / 终端 / 磁盘 + 打印机），可以同时推进，总耗时约等于最长的那个，即 $\mathbf{15}$ min。平均响应时间 $(5+15+10)/3=\mathbf{10}$ min，吞吐量 12 jobs/hr；CPU 利用率从 22\% 升到 43\%，内存、磁盘、打印机的利用率也大约翻倍。
+    \item 直觉：用\textbf{“别人做 I/O 的时间”来跑自己的计算}，让所有部件都忙起来。也正因为内存中同时有多个作业，才需要决定“CPU 先给谁”——多道程序设计\textbf{催生了调度}。
+\end{itemize}
+
+\Q{Q1-3 批处理 OS 实现时采用了 SPOOLing 技术，它的工作原理是什么？现代 OS 中还应用吗？}
+\textbf{背景}：早期批处理中，读卡片、打印这类慢速 I/O 由主机直接完成，I/O 时 CPU 只能等待。第一步改进是\textbf{卫星机}（脱机 I/O）：用一台便宜的小机器把卡片内容先转到磁带上，主机只和快速的磁带打交道。\textbf{SPOOLing}（Simultaneous Peripheral Operation On-Line，“假脱机”，1961 年曼彻斯特大学 Atlas 机）则是\textbf{用主机上的进程 + 磁盘来代替卫星机}：不需要额外的机器，却达到了脱机 I/O 的效果，所以叫“假”脱机。
+
+\textbf{工作原理}：在磁盘上开辟\textbf{输入井}和\textbf{输出井}作为缓冲区，把输入、计算、输出组织成相互独立的任务流：
+\begin{center}
+卡片机 $\xrightarrow{\text{输入进程}}$ 磁盘\textbf{输入井} $\xrightarrow{\text{作业调度}}$ 内存中运行 $\to$ 磁盘\textbf{输出井} $\xrightarrow{\text{输出进程}}$ 打印机
+\end{center}
+输入进程负责把作业从输入设备读到输入井；作业调度进程按某种策略从输入井中挑选几个“搭配得当”的作业调入内存；作业运行的结果写入输出井；输出进程再把输出井中的结果送到打印机。输入进程、作业调度、作业控制、输出进程两两之间是\textbf{生产者-消费者}关系，“井”就是它们之间的缓冲区。
+
+\textbf{三个效果}（课件原文）：
+\begin{enumerate}
+    \item \textbf{提高 I/O 速度}：作业的 I/O 变成了对磁盘上输入井/输出井的读写，而不是直接操作慢速外设，缓和了 CPU 与低速设备之间的速度矛盾。
+    \item \textbf{把独占设备改造为共享设备}：系统实际上\textbf{没有把打印机分配给任何进程}，只是在输出井中为每个进程分配一块存储区，并建立一张 I/O 请求表。
+    \item \textbf{实现虚拟设备}：多个进程“同时”使用一台独占的打印机，每个进程都以为自己独占了它——这是 OS“虚拟”特征的典型实例。
+\end{enumerate}
+
+\textbf{现代仍在使用}：最典型的是\textbf{打印队列}——应用把待打印文档先存到磁盘上的打印队列（Linux CUPS 的 \cd{/var/spool/cups}、Windows 的 Print Spooler 服务），由打印守护进程（daemon）逐个送给打印机，多个程序可以同时“打印”。此外还有邮件队列 \cd{/var/spool/mail}、\cd{cron} 任务队列。思想上，“用快速存储做缓冲 + 排队 + 后台慢慢消费”在今天无处不在：12306 的异步排队购票、消息队列（Kafka）、路由器的输出队列（计网）、日志异步落盘。
+
+\Q{Q1-4 传统的分时系统在今天有什么意义？}
+\textbf{分时}（1961 年 MIT 的 CTSS，Corbató 领导，32 个交互用户）：把 CPU 时间切成\textbf{时间片}，轮流为多个终端用户服务，每次服务一个时间片。由于切换得足够快，每个用户都觉得自己独占了机器。它的追求目标是\textbf{及时响应}，即\textbf{牺牲一部分 CPU 效率（切换开销）来换取短的响应时间}。
+
+今天的意义：
+\begin{enumerate}
+    \item \textbf{时间片轮转成为所有通用 OS 调度的基础}：服务对象从“多个用户”变成了“一个用户的多个进程”，但轮流分配 CPU 的思想没变（第 4 章 RR、MLFQ 都源于此，MLFQ 本身就出自 CTSS）。
+    \item \textbf{多用户系统仍然是分时的}：多人 ssh 登录同一台 Linux 服务器、学校的计算集群。
+    \item \textbf{云计算是分时思想的回归}：MULTICS 设想的“计算服务”以云的形式重新出现，多个租户分时共享物理服务器。
+    \item \textbf{“响应时间”成为交互系统的核心指标}；分时系统中“用户一多响应就变差、出现抖动”的问题，至今仍是调度研究的主题。
+    \item 通用 OS 的结构来自“分时 + 批处理”的结合：\textbf{分时优先，批处理在后}（前台交互作业、后台批作业）。
+\end{enumerate}
+
+\Q{Q1-5 OS 的主要作用是什么？与其他软件对比，OS 的典型特征有哪些？}
+\textbf{作用}（三个角色）：
+\begin{enumerate}
+    \item \textbf{资源的管理者}：以尽量\textbf{有效、合理}的方式管理 CPU、内存、设备、文件等资源，实现共享、提高利用率。
+    \item \textbf{服务的提供者 / 扩展机器}：通过\textbf{系统调用}为应用提供进程、地址空间、文件等抽象，屏蔽硬件细节，使用户\textbf{方便}地使用计算机。
+    \item \textbf{应用隔离}：利用虚拟内存和进程机制，为每个应用构建相互隔离的“沙箱”，一个程序崩溃不会影响其他程序和系统整体。
+\end{enumerate}
+\textbf{特征}：\textbf{并发、共享、虚拟、随机性（异步/不确定性）}。其中并发与共享是最基本的特征，二者互为存在条件（见 1.4）。
+
+\textbf{与一般应用软件相比}：
+\begin{itemize}
+    \item OS 核心运行在\textbf{内核态}，可以执行特权指令，直接控制硬件；应用运行在用户态。
+    \item OS 是\textbf{事件驱动}的：它常驻内存、不会“运行结束”，只有在中断、异常、系统调用发生时才获得控制权；而普通应用从 \cd{main} 开始顺序执行直到结束。
+    \item OS 要面对次序不可预测的事件，错误往往难以重现，调试困难。
+    \item OS 的服务对象是所有其他软件，它一旦崩溃整个系统就停止，因此对可靠性、安全性的要求更高。
+\end{itemize}
+
+\subsection{导论（课件0）：hello world 与启动}
+
+\textbf{一个程序执行的第一条指令不是 \cd{main} 里的}。对于动态链接的程序，用户态执行的第一条指令在动态链接器 \cd{ld-linux.so} 的 \cd{_start} 中；它完成加载和重定位后，才跳到 hello 自己的 \cd{_start}（来自 crt1.o，也就是 ELF 头中 Entry 字段指向的地址），再依次调用 \cd{__libc_start_main} $\to$ \cd{main} $\to$ \cd{exit}（刷新 stdio 缓冲区）$\to$ \cd{_exit} 系统调用。静态链接时第一条指令就是 hello 的 \cd{_start}。
+
+\textbf{可执行文件是“映射”到进程中，而不是整个读入}：\cd{execve} 只读取 ELF 头和程序头表，为每个 \cd{PT_LOAD} 段建立一个 \textbf{VMA}（记录“某段虚拟地址对应文件中的某个偏移，权限是什么”）；\cd{.bss}、堆、栈是匿名映射（不对应文件，初值为 0）；然后设置好用户栈，把 PC 设为入口地址。此时页表几乎是空的，所以\imp{执行第一条指令就会发生缺页}：内核根据 VMA 判断这是合法访问，于是分配物理页、从磁盘读入对应内容、填写页表，然后\textbf{返回并重新执行这条指令}。这就是\textbf{按需调页}（与 CSAPP 第 9 章“内存映射”一致）。
+
+\textbf{hello world 执行全流程}（课件红色问号处是考点）：
+\begin{enumerate}
+    \item 用户在 shell 中输入 \cd{./hello}，shell 通过 \cd{fork} + \cd{exec} 系统调用请求 OS 运行它。
+    \item OS 通过文件系统找到可执行文件，检查 ELF 魔数和可执行权限。
+    \item OS 创建进程：分配 PID 和 PCB，建立地址空间（只建 VMA 映射，不读入代码）。
+    \item 设置好上下文后，新进程\imp{先进入就绪队列，等待调度}，被调度程序选中才真正跳到入口执行——\textbf{创建后并不立即执行}。
+    \item 执行第一条指令时触发缺页。注意：\textbf{触发缺页的那一刻进程还在用户态}，硬件响应异常后才进入内核态处理。
+    \item 内核分配物理页、读盘、修改页表，返回用户态\textbf{重新执行}该指令。
+    \item \cd{printf}/\cd{puts} 经过 libc 缓冲，最终调用 \cd{write} 系统调用。
+    \item OS 找到输出设备（终端），把数据交给设备驱动或负责显示的进程。
+    \item 字符被转换成像素，写入帧缓冲区。
+    \item 显卡读取帧缓冲，输出显示信号。
+\end{enumerate}
+结论：程序的执行过程是“\textbf{用户程序 $\leftrightarrow$ OS 功能调用 $\leftrightarrow$ 调度}”不断交替的过程。OS 在其中做三类事：提供功能支持（缺页处理）、提供服务（系统调用）、进行状态切换（用户态 $\leftrightarrow$ 内核态、进程切换）。课程用\textbf{五条典型流程}串起全课：HelloWorld、fork/exec、Page Fault、打开文件、一次 I/O 请求。
+
+\textbf{OS 体系结构实例}：
+\begin{itemize}
+    \item \textbf{Windows}：用户态有环境子系统和 DLL；内核态从上到下是执行体、内核与驱动、\textbf{HAL}（硬件抽象层，屏蔽不同主板的差异）。
+    \item \textbf{UNIX}：洋葱式层次结构。\textbf{Linux}：宏内核 + 可加载内核模块（LKM，驱动可动态加载）+ VFS（统一各种文件系统）。
+    \item \textbf{xv6}：教学用宏内核，约 1 万行代码，没有模块机制；文件系统严格分层：磁盘 $\to$ buffer cache $\to$ 日志 $\to$ inode $\to$ 目录 $\to$ 路径名 $\to$ 文件描述符。
+    \item \textbf{Android}：应用 / 应用框架 / 库与运行时 / Linux 内核。\textbf{OpenHarmony}：多内核设计（Linux、LiteOS-A、LiteOS-M 按设备能力选用）。
+\end{itemize}
+\ez \imp{内核不是进程}，它是被各种事件调用的代码和数据；另外，在用户态运行的也不只是用户进程，还有系统进程（如守护进程）。
+
+\textbf{名称的演化}：Monitor（监控程序）$\to$ Executive $\to$ Control Program $\to$ Supervisor（RISC-V 的 S 模式即由此得名）$\to$ Kernel $\to$ Operating System。OS 有\textbf{个性}也有\textbf{共性}：个性是与硬件相关的部分，例如软盘控制器 PD765 的 READ 命令需要 13 个参数、返回 23 个状态字段，OS 把它抽象成“读一个数据块”；共性是与具体应用无关的公共服务。OS 提供的东西可以概括为：硬件抽象（可移植）、把有限资源变成“无限”（虚拟化）、保护、一个等价的扩展机器（虚拟机）。
+
+\textbf{xv6-riscv（上游）启动流程}：
+\begin{enumerate}
+    \item 上电后所有 hart（硬件线程/核）从 \cd{0x80000000} 开始执行 \cd{_entry}（entry.S），此时处于 \textbf{M 态}。每个核设置自己的启动栈：\cd{sp = stack0 + 4096*(hartid+1)}（每核 4KB；栈向下增长，所以 $+1$ 指向本核栈区的顶端），然后调用 \cd{start()}。
+    \item \cd{start()}（仍在 \textbf{M 态}）：把 \cd{mstatus.MPP} 设为 S（表示“返回时进入 S 态”），把 \cd{mepc} 设为 \cd{main}，\cd{satp=0}（暂不开分页），通过 \cd{medeleg/mideleg} 把异常和中断委托给 S 态处理，配置 PMP 让 S 态能访问全部物理内存，\cd{timerinit} 初始化时钟中断，把 hartid 存入 \cd{tp}。
+    \item 执行 \imp{\cd{mret}}：像“从一次异常返回”一样，硬件按 MPP 切到 \textbf{S 态}并跳到 \cd{mepc}（即 \cd{main}）。这是用“假装从异常返回”的方式降低特权级。
+    \item \cd{main()}（S 态）：hart 0 做全局初始化（\cd{kinit} 物理页分配器、\cd{kvminit} 内核页表、\cd{procinit} 进程表、\cd{trapinit}、\cd{plicinit} 中断控制器、\cd{binit} 缓冲区、\cd{fileinit}、\cd{userinit} 第一个进程），然后置 \cd{started=1}；其他 hart 自旋等待 \cd{started}，之后只做每核初始化（\cd{kvminithart} 开分页、\cd{trapinithart} 设 \cd{stvec}、\cd{plicinithart}）。\cd{__sync_synchronize()} 是内存屏障，保证 hart 0 的初始化结果对其他核可见。
+    \item 所有 hart 进入永不返回的 \cd{scheduler()}。第一个进程 initcode 由 \cd{userinit} \imp{手工构造，不是 fork 出来的}；它被调度后经 \cd{swtch} $\to$ \cd{forkret} $\to$ \cd{usertrapret} $\to$ \cd{sret} 第一次进入 U 态，执行 \cd{exec("/init")}；init 再 fork + exec 出 shell。
+\end{enumerate}
+
+\textbf{版本差异}：课上的源码题基于上游 xv6-riscv（有 \cd{start.c}，从 M 态起步）。实验用的 xv6-k210 由 \textbf{RustSBI} 在 M 态完成初始化后把控制权交给内核，\imp{内核直接进入 S 态，没有 \cd{start.c}}；关机、设置定时器要通过 SBI 的 \cd{ecall} 请求 M 态完成，核间通知用 \cd{sbi_send_ipi}，每核启动栈为 16KB。RISC-V 的三层关系：U 态程序 \cd{ecall} 进入 S 态（内核）；内核 \cd{ecall}（SBI 调用）进入 M 态（OpenSBI/RustSBI 固件）。对照 PC 上的 Linux：BIOS（MBR）或 UEFI（GPT）$\to$ GRUB 引导程序 $\to$ 内核 $\to$ init（systemd，PID 1）。
+
+\subsection{OS 的定义、作用与三种观点}
+
+\textbf{定义（老师要求“必须牢记”）}：操作系统是计算机系统中的一个\textbf{系统软件}，是一些程序模块的集合——它们能以尽量\textbf{有效、合理}的方式\textbf{组织和管理计算机的软硬件资源}，合理地组织计算机的工作流程，控制程序的执行并向用户提供各种服务功能，使得用户能够\textbf{灵活、方便}地使用计算机，使整个计算机系统能\textbf{高效}地运行。
+
+定义里对应着\textbf{三个角色}：资源的管理者（有效、合理）、服务的提供者（方便使用）、机器能力的扩展（易于扩展）。课件的\textbf{三个强调}：
+\begin{enumerate}
+    \item \textbf{硬件抽象}：屏蔽底层硬件差异，提供统一接口。例：xv6 用统一的文件描述符，读文件、读控制台、读管道的写法完全一样，都是 \cd{read(fd, buf, n)}。
+    \item \textbf{提供服务}：通过系统调用提供进程调度、内存管理、文件系统、网络通信等基础设施（xv6 约 21 个系统调用，Linux 几百个）。
+    \item \textbf{应用隔离}：每个进程有独立的页表和地址空间，错误不会扩散。
+\end{enumerate}
+OSTEP 的说法：OS 把物理资源（CPU、内存、磁盘）转换成更通用、更强大、更易用的\textbf{虚拟形式}（虚拟机）；提供可供调用的接口（\textbf{API}、标准库）；让多个程序共享 CPU、内存、设备（\textbf{资源管理器}）。三类核心资源各有一个抽象：\imp{CPU $\to$ 进程，内存 $\to$ 地址空间，外设/磁盘 $\to$ 文件}。
+
+\textbf{三种观点}：
+\begin{itemize}
+    \item \textbf{资源管理观点}（自底向上看）：OS 是资源的管理者。硬件资源有 CPU、内存、设备（I/O 设备、磁盘、时钟、网络接口），软件资源有文件和信息。目的是实现资源共享、提高利用率。复用有两种方式：\textbf{时间复用}（CPU 轮流给不同进程用）和\textbf{空间复用}（内存分成多块给不同进程同时用）。怎样管理？靠\textbf{数据结构 + 算法}：(1) 跟踪记录资源的使用状况（空闲页链表、进程表、打开文件表——哪些空闲、被谁占用、用了多久）；(2) 分配和回收资源，分\textbf{静态分配}（运行前一次分配好）和\textbf{动态分配}（运行中按需申请，利用率高，但会带来\textbf{死锁}问题）；(3) 使用时的保护，协调多个进程的冲突请求。
+    \item \textbf{进程观点}（从运行的角度动态地看）：OS 由若干\textbf{可同时、独立运行的进程}和一个\textbf{协调这些进程的核心}组成。
+    \item \textbf{虚机器（分层）观点}（从内部结构看）：把 OS 分成若干层，每一层完成特定功能，构成一个“虚机器”并为上一层提供支持，逐层扩充，最终形成整个 OS 虚机器。例：xv6 文件系统的分层结构。
+\end{itemize}
+课件还提到其他比喻：服务提供者、魔幻制造者（虚拟化）、历史教员、家长、政府、仲裁者。
+
+\textbf{设计与实现目标}：抽象、模块化、用高级语言（C）而非汇编、性能（最小化额外的时间和空间开销）、保护（应用之间、OS 与应用之间的隔离）、可靠性、节能、安全性（防止恶意入侵，保护的扩展）、移动性（能运行在越来越小的设备上）。这些目标经常冲突，例如保护要求切换特权级、检查参数，这会降低性能，所以设计 OS 就是在做\textbf{权衡}。
+
+\subsection{OS 的四大特征}
+
+\begin{itemize}
+    \item \textbf{并发}（concurrency）：处理多个同时性活动的能力。系统中同时有多个程序在运行，\textbf{宏观上}它们同时在执行；\textbf{微观上}（单 CPU）任何时刻只有一个程序在执行，它们在 CPU 上轮流执行。要区分\textbf{并发}（逻辑上同时：一段时间内交替推进）与\textbf{并行}（parallel，物理上同时：同一时刻有多个硬件在执行），并行一定是并发，反之不然。并发引出的问题：活动之间的切换、保护、相互依赖的活动之间的同步。
+    \item \textbf{共享}（sharing）：OS 与多个用户程序共同使用系统资源，资源在一段时间内被多个进程交替使用。分两种：\textbf{互斥共享}（一段时间内只能一个进程使用，如打印机）和\textbf{同时共享}（可以同时访问，如可重入代码、只读的磁盘文件）。共享引出的问题：资源分配难以达到最优，使用时需要保护。\textbf{并发与共享互为存在条件}：没有并发就谈不上共享；没有共享，并发的程序之间也就没有必要协调。
+    \item \textbf{虚拟}（virtual）：把一个物理实体映射为若干个逻辑实体，手段是\textbf{分时}或\textbf{分空间}。例：CPU 通过分时变成每个进程的“虚处理器”；内存通过分空间变成每个进程独占的地址空间（代码 + 数据 + 堆 + 栈）；显示器变成多个窗口或虚拟终端；SPOOLing 的虚拟打印机；VMM（虚拟机监控器）把整台机器虚拟成多台。虚拟是 OS 管理资源、提高利用率的重要手段。
+    \item \textbf{随机性}（不确定性/异步性）：OS 必须随时响应以\textbf{不可预测的次序}发生的事件。多个进程“走走停停”，无法预知每个进程推进的快慢；系统在某一时刻的状态（包括运行中出现的错误）难以重现。例：两个线程各对共享变量 \cd{count++} 一百万次，每次运行的结果都可能不同。
+\end{itemize}
+
+\subsection{发展历史与分类}
+
+\textbf{主线：什么贵就优化什么}。
+\begin{enumerate}
+    \item \textbf{1948–1970，硬件昂贵、人工便宜}：目标是充分利用硬件，缺乏人机交互。控制台方式一次只服务一个用户（独占）$\to$ 批处理（自动转接作业，但没有保护）$\to$ \textbf{数据通道和中断}（I/O 与计算重叠）$\to$ \textbf{多道程序设计}（多个程序同时运行，需要存储保护）$\to$ SPOOLing。
+    \item \textbf{1970–1985，硬件便宜、人工昂贵}：目标是让人用得方便。\textbf{交互、分时}：用便宜的终端让多个用户同时与系统交互，牺牲 CPU 时间换响应时间（CTSS 1961；1962 年曼彻斯特大学 Atlas 机第一个实现虚拟存储和分页）。这一阶段也首次遇到重大失败（OS/360、MULTICS）和成功（UNIX）。
+    \item \textbf{个人计算时代（1981–）}：起初 PC 资源有限，一次只运行一个程序，OS 退化为一个例程库（回归简单）；后来 PC 资源丰富，存储保护、多道程序设计又重新出现。
+    \item \textbf{网络/分布式（1981–）}：不同机器之间共享资源（打印机、文件服务器、Web 服务器），要解决共享与安全问题。
+    \item \textbf{移动计算（1995–）}：设备小型、移动、便宜，但能力有限。
+    \item \textbf{云计算（2006–）}：云操作系统管理整个数据中心，把海量硬件在逻辑上整合成“一台服务器”，提供按需使用、按量付费的资源。
+    \item \textbf{泛在计算/物联网}：人-机-物融合，许多联网设备为许多人提供个性化服务。
+\end{enumerate}
+\textbf{启示：概念的重用与回归}。技术变化会使某些思想过时，但另一种技术变化又可能使它们复活：连续文件分配在 CD-ROM 文件系统中复活；硬件保护在早期 PC 上消失后又回归；动态链接最早由 MULTICS 提出；MULTICS 的“计算服务”以集中式服务器的形式回归，成为今天的云计算。
+
+\textbf{传统分类}（批处理、分时、实时是“三种基本类型”）：\par
+\begin{btab}{P{0.130}P{0.870}}
+\thead{类型 & 要点}
+\trow{批处理 & 作业 = 用户程序 + 数据 + 作业说明书（作业控制语言 JCL，如 FMS 卡片 \cd{$JOB}、\cd{$FORTRAN}、\cd{$LOAD}、\cd{$RUN}、\cd{$END}）。操作员把许多作业组成一批输入，系统自动依次执行，形成连续的作业流。分单道与多道；慢速 I/O 问题先用卫星机、后用 SPOOLing 解决}
+\trow{分时 & 把 CPU 时间划分为时间片，轮流为每个终端用户服务；利用人的错觉，用户感觉不到等待。追求目标是\textbf{及时响应}，响应时间 = 从终端发出命令到系统给出回答的时间。\textbf{通用 OS} = 分时 + 批处理，原则是“\textbf{分时优先，批处理在后}”：频繁交互的作业在前台，时间要求不高的作业在后台}
+\trow{实时 & 能及时响应外部事件，在\textbf{规定的严格时间内}完成处理，并控制所有实时设备和任务协调工作。分两类：实时过程控制（工业、军事控制）与实时信息处理（电信交换、银行、订票、股市行情）。追求目标：严格时限内响应 + 高可靠性，关键参数是时间，强调\textbf{可预测}而不是平均速度快。\textbf{硬实时}：动作必须在规定时刻完成，否则后果严重（汽车安全气囊、ABS、心脏起搏器、飞控）；\textbf{软实时}：可以接受偶尔错过时限（视频播放丢帧、网络游戏、VoIP）}
+\trow{个人计算机 & 某一时间内只为单个用户服务；追求界面友好、使用方便、应用软件丰富}
+\trow{网络 OS & 在各种 OS 之上按网络协议开发，提供网络管理、通信、安全、资源共享；用户\textbf{知道}资源在哪台机器上（如 ssh/scp 要写主机名）}
+\trow{分布式 & 处理和控制分散在多台机器上。特征：(1) 统一的 OS，多台机器协作完成一项任务；(2) 资源进一步共享；(3) \textbf{透明性}：用户不知道资源在哪里——这是它与网络 OS 的本质区别；(4) 自治性：各主机地位平等，无主从关系；(5) 处理能力更强、速度更快、可靠性更高}
+\trow{嵌入式 & 嵌在大设备中完成特定功能，这个设备不一定是“计算机”；通常是反应式的，对处理时间要求严格（如伯克利的 TinyOS 用于微型传感器）}
+\trow{智能卡 & 资源极其受限（能耗、存储）。有的卡内置 JVM，可同时运行多个 Java 小程序 $\Rightarrow$ 同样出现多道、调度、资源管理与保护问题：OS 的核心问题与规模无关}
+\end{btab}
+Tanenbaum 的另一种分类：大型机、服务器、多处理机、PC、掌上（移动）、嵌入式、传感器节点、实时、智能卡 OS。典型国产 OS：麒麟、鸿蒙、openEuler、统信。
